@@ -1,9 +1,11 @@
-const express = require("express");
-const cors = require("cors");
-const cookieParser = require("cookie-parser");
+import "../config/env.js";
 
-const authRoutes = require("../routes/auth.routes");
-const usersRoutes = require("../routes/users.routes");
+import express from "express";
+import cors from "cors";
+import cookieParser from "cookie-parser";
+
+import authRoutes from "../routes/auth.routes.js";
+import usersRoutes from "../routes/users.routes.js";
 
 const app = express();
 
@@ -152,4 +154,4 @@ app.use((err, req, res, next) => {
   });
 });
 
-module.exports = app;
+export default app;

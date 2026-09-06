@@ -1,46 +1,89 @@
-const { firebaseAuth } = require("../config/firebase");
+import { firebaseAuth } from "../config/firebase.js";
 
-async function verifyToken(req, res, next) {
+const verifyToken = async (req, res, next) => {
   try {
-    const authHeader = req.headers.authorization;
+    const authorization = req.headers.authorization || "";
 
-    if (!authHeader) {
+    if (!authorization.startsWith("Bearer ")) {
       return res.status(401).json({
         success: false,
-        message: "Authorization header is required.",
+        code: "auth/token-missing",
+        message:
+          "Unauthorized: Firebase ID token is required.",
       });
     }
 
-    if (!authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({
-        success: false,
-        message: "Invalid authorization format.",
-      });
-    }
-
-    const token = authHeader.substring(7).trim();
+    const token = authorization.slice(7).trim();
 
     if (!token) {
       return res.status(401).json({
         success: false,
-        message: "Authentication token is missing.",
+        code: "auth/token-missing",
+        message:
+          "Unauthorized: Firebase ID token is missing.",
       });
     }
 
-    const decodedToken = await firebaseAuth.verifyIdToken(token);
+    const decodedToken =
+      await firebaseAuth.verifyIdToken(token);
 
-    req.user = decodedToken;
+    if (!decodedToken?.uid) {
+      return res.status(401).json({
+        success: false,
+        code: "auth/uid-missing",
+        message:
+          "Unauthorized: Firebase UID is unavailable.",
+      });
+    }
+
+    if (!decodedToken?.email) {
+      return res.status(401).json({
+        success: false,
+        code: "auth/email-missing",
+        message:
+          "Unauthorized: Firebase email is unavailable.",
+      });
+    }
+
+    req.user = {
+      uid: decodedToken.uid,
+
+      email: String(decodedToken.email)
+        .trim()
+        .toLowerCase(),
+
+      name: decodedToken.name || "",
+
+      picture: decodedToken.picture || "",
+
+      emailVerified:
+        decodedToken.email_verified === true,
+
+      provider:
+        decodedToken.firebase?.sign_in_provider ||
+        "password",
+    };
 
     return next();
   } catch (error) {
-    console.error("Token verification failed:", error.message);
+    console.error("VERIFY TOKEN ERROR:", {
+      code: error?.code || "UNKNOWN",
+
+      message:
+        error?.message ||
+        "Unknown Firebase authentication error.",
+
+      projectId:
+        process.env.FIREBASE_PROJECT_ID || "MISSING",
+    });
 
     return res.status(401).json({
       success: false,
-      message: "Authentication failed.",
+      code: "auth/invalid-token",
+      message:
+        "Unauthorized: Invalid or expired Firebase ID token.",
     });
   }
-}
+};
 
-module.exports = verifyToken;
-module.exports.verifyToken = verifyToken;
+export default verifyToken;

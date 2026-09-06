@@ -1,21 +1,9 @@
-const express = require("express");
-const { ObjectId } = require("mongodb");
+import express from "express";
 
-const verifyTokenModule = require("../middleware/verifyToken");
+import verifyToken from "../middleware/verifyToken.js";
+import verifyUser from "../middleware/verifyUser.js";
 
-const verifyToken =
-  typeof verifyTokenModule === "function"
-    ? verifyTokenModule
-    : typeof verifyTokenModule.verifyToken === "function"
-      ? verifyTokenModule.verifyToken
-      : typeof verifyTokenModule.default === "function"
-        ? verifyTokenModule.default
-        : null;
-
-if (typeof verifyToken !== "function") {
-  throw new TypeError("verifyToken middleware could not be loaded.");
-}
-const verifyUser = require("../middleware/verifyUser");
+import { getCollections } from "../config/db.js";
 
 const router = express.Router();
 
@@ -23,24 +11,19 @@ const router = express.Router();
 // POST /api/auth/register
 // Create authenticated user in MongoDB usersCollection
 // ============================================================
+
 router.post("/register", verifyToken, async (req, res) => {
   try {
-    const { usersCollection, db } = req.app.locals;
-
-    if (!usersCollection) {
-      return res.status(500).json({
-        success: false,
-        message: "Users collection is not initialized.",
-      });
-    }
+    const { usersCollection } = getCollections();
 
     const firebaseUser = req.user;
 
-    const { name, phone, photo, provider, profile } = req.body;
+    const { name, phone, photo, provider, profile } = req.body || {};
 
     // --------------------------------------------------------
     // Basic validation
     // --------------------------------------------------------
+
     if (!firebaseUser?.uid) {
       return res.status(401).json({
         success: false,
@@ -64,6 +47,7 @@ router.post("/register", verifyToken, async (req, res) => {
     // --------------------------------------------------------
     // Check existing user
     // --------------------------------------------------------
+
     const existingUser = await usersCollection.findOne({
       uid: firebaseUser.uid,
     });
@@ -79,6 +63,7 @@ router.post("/register", verifyToken, async (req, res) => {
     // --------------------------------------------------------
     // Create new MongoDB user
     // --------------------------------------------------------
+
     const now = new Date();
 
     const newUser = {
@@ -92,14 +77,18 @@ router.post("/register", verifyToken, async (req, res) => {
 
       photo: cleanPhoto || firebaseUser.picture || null,
 
-      provider:
-        provider || firebaseUser.firebase?.sign_in_provider || "password",
+      provider: provider || firebaseUser.provider || "password",
 
       role: "student",
 
       status: "active",
 
-      profile: profile && typeof profile === "object" ? profile : {},
+      profile:
+        profile && typeof profile === "object" && !Array.isArray(profile)
+          ? profile
+          : {},
+
+      emailVerified: firebaseUser.emailVerified === true,
 
       createdAt: now,
 
@@ -123,6 +112,13 @@ router.post("/register", verifyToken, async (req, res) => {
   } catch (error) {
     console.error("POST /auth/register error:", error);
 
+    if (error?.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "User already exists.",
+      });
+    }
+
     return res.status(500).json({
       success: false,
       message: "Failed to register user.",
@@ -134,6 +130,7 @@ router.post("/register", verifyToken, async (req, res) => {
 // GET /api/auth/me
 // Get current authenticated MongoDB user
 // ============================================================
+
 router.get("/me", verifyToken, verifyUser, (req, res) => {
   return res.status(200).json({
     success: true,
@@ -145,21 +142,23 @@ router.get("/me", verifyToken, verifyUser, (req, res) => {
 // PATCH /api/auth/me
 // Update current user's profile
 // ============================================================
+
 router.patch("/me", verifyToken, verifyUser, async (req, res) => {
   try {
-    const { usersCollection } = req.app.locals;
+    const { usersCollection } = getCollections();
 
     const uid = req.user.uid;
 
-    const { name, phone, photo, profile } = req.body;
+    const { name, phone, photo, profile } = req.body || {};
 
     const updateData = {
       updatedAt: new Date(),
     };
 
     // ------------------------------------------------------
-    // Only update fields that are provided
+    // Name
     // ------------------------------------------------------
+
     if (typeof name === "string") {
       const cleanName = name.trim();
 
@@ -173,13 +172,25 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       updateData.name = cleanName;
     }
 
+    // ------------------------------------------------------
+    // Phone
+    // ------------------------------------------------------
+
     if (typeof phone === "string") {
       updateData.phone = phone.trim();
     }
 
+    // ------------------------------------------------------
+    // Photo
+    // ------------------------------------------------------
+
     if (typeof photo === "string") {
       updateData.photo = photo.trim();
     }
+
+    // ------------------------------------------------------
+    // Profile
+    // ------------------------------------------------------
 
     if (profile && typeof profile === "object" && !Array.isArray(profile)) {
       updateData.profile = profile;
@@ -188,6 +199,7 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
     // ------------------------------------------------------
     // Update MongoDB
     // ------------------------------------------------------
+
     const result = await usersCollection.updateOne(
       { uid },
       {
@@ -202,9 +214,6 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       });
     }
 
-    // ------------------------------------------------------
-    // Get updated user
-    // ------------------------------------------------------
     const updatedUser = await usersCollection.findOne({
       uid,
     });
@@ -228,9 +237,10 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
 // POST /api/auth/logout
 // Logout endpoint
 // ============================================================
+
 router.post("/logout", verifyToken, async (req, res) => {
   try {
-    const { usersCollection } = req.app.locals;
+    const { usersCollection } = getCollections();
 
     const uid = req.user.uid;
 
@@ -257,4 +267,4 @@ router.post("/logout", verifyToken, async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;

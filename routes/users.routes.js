@@ -1,31 +1,13 @@
-const express = require("express");
-const { ObjectId } = require("mongodb");
+import express from "express";
+import { ObjectId } from "mongodb";
 
-const verifyTokenModule = require("../middleware/verifyToken");
+import verifyToken from "../middleware/verifyToken.js";
+import verifyUser from "../middleware/verifyUser.js";
+import verifyAdmin from "../middleware/verifyAdmin.js";
 
-const verifyToken =
-  typeof verifyTokenModule === "function"
-    ? verifyTokenModule
-    : typeof verifyTokenModule.verifyToken === "function"
-      ? verifyTokenModule.verifyToken
-      : typeof verifyTokenModule.default === "function"
-        ? verifyTokenModule.default
-        : null;
-
-if (typeof verifyToken !== "function") {
-  throw new TypeError("verifyToken middleware could not be loaded.");
-}
-
-const verifyUser = require("../middleware/verifyUser");
-const verifyAdmin = require("../middleware/verifyAdmin");
-
-const { getCollections } = require("../config/db");
+import { getCollections } from "../config/db.js";
 
 const router = express.Router();
-
-console.log("verifyToken type:", typeof verifyToken);
-console.log("verifyUser type:", typeof verifyUser);
-console.log("verifyAdmin type:", typeof verifyAdmin);
 
 // ============================================================
 // CONSTANTS
@@ -57,6 +39,7 @@ function escapeRegex(value) {
 
 function parsePagination(page, limit) {
   const parsedPage = Number.parseInt(page, 10);
+
   const parsedLimit = Number.parseInt(limit, 10);
 
   const safePage =
@@ -96,7 +79,7 @@ const USER_PROJECTION = {
 };
 
 // ============================================================
-// POST /users
+// POST /api/users
 // CREATE / SYNC CURRENT FIREBASE USER
 // ============================================================
 
@@ -108,7 +91,6 @@ router.post("/", verifyToken, async (req, res) => {
 
     // --------------------------------------------------------
     // Firebase identity
-    // NEVER trust UID/email from client
     // --------------------------------------------------------
 
     const uid = firebaseUser?.uid;
@@ -124,28 +106,27 @@ router.post("/", verifyToken, async (req, res) => {
 
     // --------------------------------------------------------
     // Client profile data
-    // role/status are intentionally ignored
+    // role/status ignored
     // --------------------------------------------------------
 
     const { name, phone, photo, profile } = req.body || {};
 
     const cleanName = cleanString(name);
+
     const cleanPhone = cleanString(phone);
+
     const cleanPhoto = cleanString(photo);
 
     // --------------------------------------------------------
-    // Provider must come from Firebase token
+    // Provider from Firebase token
     // --------------------------------------------------------
 
-    const firebaseProvider = firebaseUser.firebase?.sign_in_provider;
+    const firebaseProvider = firebaseUser.provider;
 
-    let provider = "password";
-
-    if (firebaseProvider === "google.com") {
-      provider = "google";
-    } else if (firebaseProvider) {
-      provider = firebaseProvider;
-    }
+    const provider =
+      firebaseProvider === "google.com"
+        ? "google"
+        : firebaseProvider || "password";
 
     // --------------------------------------------------------
     // Find existing user
@@ -176,7 +157,7 @@ router.post("/", verifyToken, async (req, res) => {
         provider: existingUser.provider || provider,
 
         emailVerified:
-          firebaseUser.email_verified ?? existingUser.emailVerified ?? false,
+          firebaseUser.emailVerified ?? existingUser.emailVerified ?? false,
 
         lastLogin: new Date(),
 
@@ -184,7 +165,7 @@ router.post("/", verifyToken, async (req, res) => {
       };
 
       // ------------------------------------------------------
-      // Update profile only when supplied
+      // Profile
       // ------------------------------------------------------
 
       if (profile && typeof profile === "object" && !Array.isArray(profile)) {
@@ -239,7 +220,7 @@ router.post("/", verifyToken, async (req, res) => {
 
       status: "active",
 
-      emailVerified: firebaseUser.email_verified || false,
+      emailVerified: firebaseUser.emailVerified || false,
 
       profile:
         profile && typeof profile === "object" && !Array.isArray(profile)
@@ -272,11 +253,7 @@ router.post("/", verifyToken, async (req, res) => {
   } catch (error) {
     console.error("POST /users error:", error);
 
-    // --------------------------------------------------------
-    // MongoDB duplicate key
-    // --------------------------------------------------------
-
-    if (error.code === 11000) {
+    if (error?.code === 11000) {
       return res.status(409).json({
         success: false,
         message: "User already exists.",
@@ -291,11 +268,8 @@ router.post("/", verifyToken, async (req, res) => {
 });
 
 // ============================================================
-// GET /users
-// ADMIN: GET ALL USERS
-//
-// Example:
-// GET /api/users?page=1&limit=10&search=&sort=newest
+// GET /api/users
+// ADMIN: GET USERS
 // ============================================================
 
 router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
@@ -312,7 +286,7 @@ router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
     const sort = cleanString(req.query.sort) || "newest";
 
     // --------------------------------------------------------
-    // Build query
+    // Query
     // --------------------------------------------------------
 
     const query = {};
@@ -426,14 +400,8 @@ router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
 });
 
 // ============================================================
-// GET /users/:email
+// GET /api/users/:email
 // GET SINGLE USER
-//
-// Admin:
-//   Can access any user.
-//
-// Normal user:
-//   Can access only their own account.
 // ============================================================
 
 router.get("/:email", verifyToken, verifyUser, async (req, res) => {
@@ -495,7 +463,7 @@ router.get("/:email", verifyToken, verifyUser, async (req, res) => {
 });
 
 // ============================================================
-// PATCH /users/:id/role
+// PATCH /api/users/:id/role
 // ADMIN: CHANGE USER ROLE
 // ============================================================
 
@@ -509,10 +477,6 @@ router.patch(
       const { usersCollection } = getCollections();
 
       const { id } = req.params;
-
-      // --------------------------------------------------------
-      // Validate MongoDB ObjectId
-      // --------------------------------------------------------
 
       if (!ObjectId.isValid(id)) {
         return res.status(400).json({
@@ -530,12 +494,10 @@ router.patch(
         });
       }
 
-      // --------------------------------------------------------
-      // Prevent admin from changing own role
-      // --------------------------------------------------------
+      const objectId = new ObjectId(id);
 
       const targetUser = await usersCollection.findOne({
-        _id: new ObjectId(id),
+        _id: objectId,
       });
 
       if (!targetUser) {
@@ -552,13 +514,9 @@ router.patch(
         });
       }
 
-      // --------------------------------------------------------
-      // Update role
-      // --------------------------------------------------------
-
       await usersCollection.updateOne(
         {
-          _id: new ObjectId(id),
+          _id: objectId,
         },
         {
           $set: {
@@ -570,7 +528,7 @@ router.patch(
 
       const updatedUser = await usersCollection.findOne(
         {
-          _id: new ObjectId(id),
+          _id: objectId,
         },
         {
           projection: USER_PROJECTION,
@@ -594,7 +552,7 @@ router.patch(
 );
 
 // ============================================================
-// PATCH /users/:id/status
+// PATCH /api/users/:id/status
 // ADMIN: CHANGE USER STATUS
 // ============================================================
 
@@ -608,10 +566,6 @@ router.patch(
       const { usersCollection } = getCollections();
 
       const { id } = req.params;
-
-      // --------------------------------------------------------
-      // Validate ID
-      // --------------------------------------------------------
 
       if (!ObjectId.isValid(id)) {
         return res.status(400).json({
@@ -631,12 +585,10 @@ router.patch(
         });
       }
 
-      // --------------------------------------------------------
-      // Find target user
-      // --------------------------------------------------------
+      const objectId = new ObjectId(id);
 
       const targetUser = await usersCollection.findOne({
-        _id: new ObjectId(id),
+        _id: objectId,
       });
 
       if (!targetUser) {
@@ -646,10 +598,6 @@ router.patch(
         });
       }
 
-      // --------------------------------------------------------
-      // Prevent admin from disabling own account
-      // --------------------------------------------------------
-
       if (targetUser.uid === req.user.uid) {
         return res.status(403).json({
           success: false,
@@ -657,13 +605,9 @@ router.patch(
         });
       }
 
-      // --------------------------------------------------------
-      // Update status
-      // --------------------------------------------------------
-
       await usersCollection.updateOne(
         {
-          _id: new ObjectId(id),
+          _id: objectId,
         },
         {
           $set: {
@@ -675,7 +619,7 @@ router.patch(
 
       const updatedUser = await usersCollection.findOne(
         {
-          _id: new ObjectId(id),
+          _id: objectId,
         },
         {
           projection: USER_PROJECTION,
@@ -699,7 +643,7 @@ router.patch(
 );
 
 // ============================================================
-// DELETE /users/:id
+// DELETE /api/users/:id
 // ADMIN: DELETE USER
 // ============================================================
 
@@ -714,10 +658,6 @@ router.delete(
 
       const { id } = req.params;
 
-      // --------------------------------------------------------
-      // Validate ID
-      // --------------------------------------------------------
-
       if (!ObjectId.isValid(id)) {
         return res.status(400).json({
           success: false,
@@ -725,12 +665,10 @@ router.delete(
         });
       }
 
-      // --------------------------------------------------------
-      // Find target user
-      // --------------------------------------------------------
+      const objectId = new ObjectId(id);
 
       const targetUser = await usersCollection.findOne({
-        _id: new ObjectId(id),
+        _id: objectId,
       });
 
       if (!targetUser) {
@@ -740,10 +678,6 @@ router.delete(
         });
       }
 
-      // --------------------------------------------------------
-      // Prevent admin self-delete
-      // --------------------------------------------------------
-
       if (targetUser.uid === req.user.uid) {
         return res.status(403).json({
           success: false,
@@ -751,12 +685,8 @@ router.delete(
         });
       }
 
-      // --------------------------------------------------------
-      // Delete user
-      // --------------------------------------------------------
-
       const result = await usersCollection.deleteOne({
-        _id: new ObjectId(id),
+        _id: objectId,
       });
 
       if (result.deletedCount === 0) {
@@ -781,4 +711,4 @@ router.delete(
   },
 );
 
-module.exports = router;
+export default router;

@@ -1,8 +1,6 @@
-const { MongoClient, ServerApiVersion } = require("mongodb");
+import "./env.js";
 
-// ============================================================
-// ENVIRONMENT VARIABLES
-// ============================================================
+import { MongoClient, ServerApiVersion } from "mongodb";
 
 const username = process.env.DB_USERNAME;
 const password = process.env.DB_PASS;
@@ -16,19 +14,11 @@ if (!password) {
   throw new Error("DB_PASS is missing from .env");
 }
 
-// ============================================================
-// MONGODB URI
-// ============================================================
-
 const uri =
   `mongodb+srv://${encodeURIComponent(username)}` +
   `:${encodeURIComponent(password)}` +
   `@cluster0.g29mryf.mongodb.net/` +
   `?appName=Cluster0`;
-
-// ============================================================
-// MONGODB CLIENT
-// ============================================================
 
 const client = new MongoClient(uri, {
   serverApi: {
@@ -38,10 +28,6 @@ const client = new MongoClient(uri, {
   },
 });
 
-// ============================================================
-// DATABASE / COLLECTION REFERENCES
-// ============================================================
-
 let db = null;
 
 let usersCollection = null;
@@ -50,10 +36,6 @@ let alumniProfilesCollection = null;
 let reunionEventsCollection = null;
 let reunionRegistrationsCollection = null;
 let giftPackagesCollection = null;
-
-// ============================================================
-// CONNECT DATABASE
-// ============================================================
 
 async function connectDB() {
   try {
@@ -69,10 +51,6 @@ async function connectDB() {
 
     db = client.db(dbName);
 
-    // ----------------------------------------------------------
-    // Collections
-    // ----------------------------------------------------------
-
     usersCollection = db.collection("usersCollection");
 
     studentProfilesCollection = db.collection("studentProfilesCollection");
@@ -86,10 +64,6 @@ async function connectDB() {
     );
 
     giftPackagesCollection = db.collection("giftPackagesCollection");
-
-    // ----------------------------------------------------------
-    // Indexes
-    // ----------------------------------------------------------
 
     await usersCollection.createIndex(
       { uid: 1 },
@@ -118,10 +92,6 @@ async function connectDB() {
   }
 }
 
-// ============================================================
-// GET DATABASE
-// ============================================================
-
 function getDB() {
   if (!db) {
     throw new Error("MongoDB is not connected.");
@@ -129,10 +99,6 @@ function getDB() {
 
   return db;
 }
-
-// ============================================================
-// GET COLLECTIONS
-// ============================================================
 
 function getCollections() {
   if (!db) {
@@ -149,13 +115,4 @@ function getCollections() {
   };
 }
 
-// ============================================================
-// EXPORT
-// ============================================================
-
-module.exports = {
-  client,
-  connectDB,
-  getDB,
-  getCollections,
-};
+export { client, connectDB, getDB, getCollections };

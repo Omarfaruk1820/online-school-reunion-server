@@ -1,11 +1,7 @@
-const { getCollections } = require("../config/db");
+import { getCollections } from "../config/db.js";
 
 const verifyUser = async (req, res, next) => {
   try {
-    // ----------------------------------------------------------
-    // Firebase user check
-    // ----------------------------------------------------------
-
     if (!req.user || !req.user.uid) {
       return res.status(401).json({
         success: false,
@@ -13,15 +9,7 @@ const verifyUser = async (req, res, next) => {
       });
     }
 
-    // ----------------------------------------------------------
-    // Collections
-    // ----------------------------------------------------------
-
     const { usersCollection } = getCollections();
-
-    // ----------------------------------------------------------
-    // Find MongoDB user
-    // ----------------------------------------------------------
 
     const user = await usersCollection.findOne(
       {
@@ -47,20 +35,12 @@ const verifyUser = async (req, res, next) => {
       },
     );
 
-    // ----------------------------------------------------------
-    // User not found
-    // ----------------------------------------------------------
-
     if (!user) {
       return res.status(404).json({
         success: false,
         message: "User account not found.",
       });
     }
-
-    // ----------------------------------------------------------
-    // Account status
-    // ----------------------------------------------------------
 
     if (user.status !== "active") {
       return res.status(403).json({
@@ -69,13 +49,9 @@ const verifyUser = async (req, res, next) => {
       });
     }
 
-    // ----------------------------------------------------------
-    // Attach MongoDB user
-    // ----------------------------------------------------------
-
     req.userData = user;
 
-    next();
+    return next();
   } catch (error) {
     console.error("User verification error:", error.message);
 
@@ -86,4 +62,4 @@ const verifyUser = async (req, res, next) => {
   }
 };
 
-module.exports = verifyUser;
+export default verifyUser;

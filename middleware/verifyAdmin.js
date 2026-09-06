@@ -21,9 +21,12 @@ const verifyAdmin = (req, res, next) => {
       });
     }
 
-    next();
+    return next();
   } catch (error) {
-    console.error("Admin verification error:", error.message);
+    console.error(
+      "Admin verification error:",
+      error.message,
+    );
 
     return res.status(500).json({
       success: false,
@@ -32,4 +35,4 @@ const verifyAdmin = (req, res, next) => {
   }
 };
 
-module.exports = verifyAdmin;
+export default verifyAdmin;

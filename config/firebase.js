@@ -1,20 +1,11 @@
-const { getApps, initializeApp, cert } = require("firebase-admin/app");
+import "./env.js";
 
-const { getAuth } = require("firebase-admin/auth");
-
-// ============================================================
-// ENVIRONMENT VARIABLES
-// ============================================================
+import { getApps, initializeApp, cert } from "firebase-admin/app";
+import { getAuth } from "firebase-admin/auth";
 
 const projectId = process.env.FIREBASE_PROJECT_ID;
-
 const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-
 const privateKey = process.env.FIREBASE_PRIVATE_KEY;
-
-// ============================================================
-// VALIDATION
-// ============================================================
 
 if (!projectId) {
   throw new Error("FIREBASE_PROJECT_ID is missing from .env");
@@ -27,10 +18,6 @@ if (!clientEmail) {
 if (!privateKey) {
   throw new Error("FIREBASE_PRIVATE_KEY is missing from .env");
 }
-
-// ============================================================
-// FIREBASE ADMIN APP
-// ============================================================
 
 const firebaseApp =
   getApps().length > 0
@@ -45,17 +32,6 @@ const firebaseApp =
 
 console.log("Firebase Admin initialized successfully.");
 
-// ============================================================
-// FIREBASE AUTH
-// ============================================================
-
 const firebaseAuth = getAuth(firebaseApp);
 
-// ============================================================
-// EXPORT
-// ============================================================
-
-module.exports = {
-  firebaseApp,
-  firebaseAuth,
-};
+export { firebaseApp, firebaseAuth };
