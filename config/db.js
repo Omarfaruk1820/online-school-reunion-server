@@ -59,10 +59,15 @@ async function connectDB() {
       db = client.db(dbName);
 
       users = db.collection("users");
+
       studentProfiles = db.collection("studentProfiles");
+
       alumniProfiles = db.collection("alumniProfiles");
+
       reunionEvents = db.collection("reunionEvents");
+
       reunionRegistrations = db.collection("reunionRegistrations");
+
       giftPackages = db.collection("giftPackages");
 
       await users.createIndex(
@@ -81,6 +86,7 @@ async function connectDB() {
       );
 
       console.log(`MongoDB connected successfully. Database: ${dbName}`);
+
       console.log("MongoDB collections initialized.");
 
       return db;

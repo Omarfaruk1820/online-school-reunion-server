@@ -4,6 +4,8 @@ import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 
+import { connectDB } from "../config/db.js";
+
 import authRoutes from "../routes/auth.routes.js";
 import usersRoutes from "../routes/users.routes.js";
 
@@ -23,10 +25,6 @@ if (isProduction) {
 // CORS
 // ============================================================
 
-// ============================================================
-// CORS
-// ============================================================
-
 const clientUrls = (process.env.CLIENT_URL || "")
   .split(",")
   .map((url) => url.trim())
@@ -37,8 +35,6 @@ console.log("Allowed CORS origins:", clientUrls);
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests without an Origin header
-      // Example: Postman, server-to-server requests
       if (!origin) {
         return callback(null, true);
       }
@@ -54,9 +50,20 @@ app.use(
 
     credentials: true,
 
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    methods: [
+      "GET",
+      "POST",
+      "PUT",
+      "PATCH",
+      "DELETE",
+      "OPTIONS",
+    ],
 
-    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Requested-With",
+    ],
 
     optionsSuccessStatus: 204,
   }),
@@ -109,6 +116,35 @@ app.get("/api/health", (req, res) => {
 });
 
 // ============================================================
+// DATABASE INITIALIZATION
+// ============================================================
+//
+// Vercel is serverless.
+//
+// Every request that needs MongoDB must make sure the
+// database connection and collections are initialized.
+//
+// connectDB() is cached inside config/db.js, so this does
+// NOT create a new MongoDB connection on every request.
+//
+// ============================================================
+
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+
+    next();
+  } catch (error) {
+    console.error("Database initialization failed:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Database connection failed.",
+    });
+  }
+});
+
+// ============================================================
 // AUTH ROUTES
 // ============================================================
 
@@ -138,12 +174,9 @@ app.use((req, res) => {
 app.use((err, req, res, next) => {
   console.error("Server Error:", err);
 
-  if (err.message === "Not allowed by CORS") {
-    return res.status(403).json({
-      success: false,
-      message: "CORS policy blocked this request.",
-    });
-  }
+  // ----------------------------------------------------------
+  // Invalid JSON
+  // ----------------------------------------------------------
 
   if (err instanceof SyntaxError && err.status === 400 && "body" in err) {
     return res.status(400).json({
@@ -151,6 +184,10 @@ app.use((err, req, res, next) => {
       message: "Invalid JSON payload.",
     });
   }
+
+  // ----------------------------------------------------------
+  // Generic error
+  // ----------------------------------------------------------
 
   const statusCode = err.statusCode || err.status || 500;
 
@@ -164,5 +201,9 @@ app.use((err, req, res, next) => {
     message,
   });
 });
+
+// ============================================================
+// EXPORT
+// ============================================================
 
 export default app;
