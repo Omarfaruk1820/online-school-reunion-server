@@ -1,7 +1,7 @@
 const express = require("express");
 const { ObjectId } = require("mongodb");
 
-const verifyToken = require("../middleware/verifyToken");
+const { verifyToken } = require("../middleware/verifyToken");
 const verifyUser = require("../middleware/verifyUser");
 const verifyAdmin = require("../middleware/verifyAdmin");
 

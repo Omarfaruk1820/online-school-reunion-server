@@ -1,12 +1,12 @@
 const { firebaseAuth } = require("../config/firebase");
 
-const verifyToken = async (req, res, next) => {
+// ============================================================
+// VERIFY FIREBASE ID TOKEN
+// ============================================================
+
+async function verifyToken(req, res, next) {
   try {
     const authHeader = req.headers.authorization;
-
-    // ----------------------------------------------------------
-    // Authorization header check
-    // ----------------------------------------------------------
 
     if (!authHeader) {
       return res.status(401).json({
@@ -15,20 +15,12 @@ const verifyToken = async (req, res, next) => {
       });
     }
 
-    // ----------------------------------------------------------
-    // Bearer check
-    // ----------------------------------------------------------
-
     if (!authHeader.startsWith("Bearer ")) {
       return res.status(401).json({
         success: false,
         message: "Invalid authorization format.",
       });
     }
-
-    // ----------------------------------------------------------
-    // Extract token
-    // ----------------------------------------------------------
 
     const token = authHeader.substring(7).trim();
 
@@ -39,19 +31,11 @@ const verifyToken = async (req, res, next) => {
       });
     }
 
-    // ----------------------------------------------------------
-    // Verify Firebase ID Token
-    // ----------------------------------------------------------
-
     const decodedToken = await firebaseAuth.verifyIdToken(token);
-
-    // ----------------------------------------------------------
-    // Attach Firebase user to request
-    // ----------------------------------------------------------
 
     req.user = decodedToken;
 
-    next();
+    return next();
   } catch (error) {
     console.error("Token verification failed:", error.message);
 
@@ -60,6 +44,12 @@ const verifyToken = async (req, res, next) => {
       message: "Authentication failed.",
     });
   }
-};
+}
 
-module.exports = verifyToken;
+// ============================================================
+// EXPORT
+// ============================================================
+
+module.exports = {
+  verifyToken,
+};
