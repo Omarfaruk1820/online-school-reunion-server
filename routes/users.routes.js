@@ -39,7 +39,6 @@ function escapeRegex(value) {
 
 function parsePagination(page, limit) {
   const parsedPage = Number.parseInt(page, 10);
-
   const parsedLimit = Number.parseInt(limit, 10);
 
   const safePage =
@@ -57,8 +56,19 @@ function parsePagination(page, limit) {
   };
 }
 
+function isValidObjectId(id) {
+  return ObjectId.isValid(id);
+}
+
 // ============================================================
 // USER PROJECTION
+// ============================================================
+//
+// Only fields required by the frontend/admin dashboard are
+// returned.
+//
+// Never expose unnecessary internal fields.
+//
 // ============================================================
 
 const USER_PROJECTION = {
@@ -82,10 +92,23 @@ const USER_PROJECTION = {
 // POST /api/users
 // CREATE / SYNC CURRENT FIREBASE USER
 // ============================================================
+//
+// Firebase = authentication
+// MongoDB "users" = application user data
+//
+// Client cannot control:
+// - role
+// - status
+// - uid
+// - email
+//
+// Server gets identity from Firebase token.
+//
+// ============================================================
 
 router.post("/", verifyToken, async (req, res) => {
   try {
-    const { usersCollection } = getCollections();
+    const { users } = getCollections();
 
     const firebaseUser = req.user;
 
@@ -106,19 +129,18 @@ router.post("/", verifyToken, async (req, res) => {
 
     // --------------------------------------------------------
     // Client profile data
-    // role/status ignored
+    //
+    // role and status are intentionally ignored.
     // --------------------------------------------------------
 
     const { name, phone, photo, profile } = req.body || {};
 
     const cleanName = cleanString(name);
-
     const cleanPhone = cleanString(phone);
-
     const cleanPhoto = cleanString(photo);
 
     // --------------------------------------------------------
-    // Provider from Firebase token
+    // Provider
     // --------------------------------------------------------
 
     const firebaseProvider = firebaseUser.provider;
@@ -132,7 +154,7 @@ router.post("/", verifyToken, async (req, res) => {
     // Find existing user
     // --------------------------------------------------------
 
-    const existingUser = await usersCollection.findOne({
+    const existingUser = await users.findOne({
       uid,
     });
 
@@ -165,21 +187,25 @@ router.post("/", verifyToken, async (req, res) => {
       };
 
       // ------------------------------------------------------
-      // Profile
+      // IMPORTANT:
+      // Only update profile when valid profile data exists.
+      //
+      // This prevents accidentally replacing an existing
+      // profile with {} during every login.
       // ------------------------------------------------------
 
       if (profile && typeof profile === "object" && !Array.isArray(profile)) {
         updateData.profile = profile;
       }
 
-      await usersCollection.updateOne(
+      await users.updateOne(
         { uid },
         {
           $set: updateData,
         },
       );
 
-      const updatedUser = await usersCollection.findOne(
+      const updatedUser = await users.findOne(
         { uid },
         {
           projection: USER_PROJECTION,
@@ -202,13 +228,13 @@ router.post("/", verifyToken, async (req, res) => {
     const newUser = {
       uid,
 
+      email: firebaseEmail || null,
+
       name: cleanName || firebaseUser.name || "School Member",
 
-      email: firebaseEmail,
+      phone: cleanPhone || null,
 
-      phone: cleanPhone,
-
-      photo: cleanPhoto || firebaseUser.picture || "",
+      photo: cleanPhoto || firebaseUser.picture || null,
 
       provider,
 
@@ -220,7 +246,7 @@ router.post("/", verifyToken, async (req, res) => {
 
       status: "active",
 
-      emailVerified: firebaseUser.emailVerified || false,
+      emailVerified: firebaseUser.emailVerified === true,
 
       profile:
         profile && typeof profile === "object" && !Array.isArray(profile)
@@ -234,9 +260,13 @@ router.post("/", verifyToken, async (req, res) => {
       lastLogin: now,
     };
 
-    const result = await usersCollection.insertOne(newUser);
+    // --------------------------------------------------------
+    // Insert
+    // --------------------------------------------------------
 
-    const createdUser = await usersCollection.findOne(
+    const result = await users.insertOne(newUser);
+
+    const createdUser = await users.findOne(
       {
         _id: result.insertedId,
       },
@@ -253,6 +283,7 @@ router.post("/", verifyToken, async (req, res) => {
   } catch (error) {
     console.error("POST /users error:", error);
 
+    // MongoDB duplicate key
     if (error?.code === 11000) {
       return res.status(409).json({
         success: false,
@@ -269,25 +300,29 @@ router.post("/", verifyToken, async (req, res) => {
 
 // ============================================================
 // GET /api/users
-// ADMIN: GET USERS
+// ADMIN: GET ALL USERS
 // ============================================================
 
 router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
   try {
-    const { usersCollection } = getCollections();
+    const { users } = getCollections();
+
+    // ------------------------------------------------------
+    // Pagination
+    // ------------------------------------------------------
 
     const { page, limit, skip } = parsePagination(
       req.query.page,
       req.query.limit,
     );
 
+    // ------------------------------------------------------
+    // Search
+    // ------------------------------------------------------
+
     const search = cleanString(req.query.search);
 
     const sort = cleanString(req.query.sort) || "newest";
-
-    // --------------------------------------------------------
-    // Query
-    // --------------------------------------------------------
 
     const query = {};
 
@@ -322,46 +357,55 @@ router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
       ];
     }
 
-    // --------------------------------------------------------
+    // ------------------------------------------------------
     // Sorting
-    // --------------------------------------------------------
+    // ------------------------------------------------------
 
     let sortOption = {
       createdAt: -1,
     };
 
-    if (sort === "oldest") {
-      sortOption = {
-        createdAt: 1,
-      };
+    switch (sort) {
+      case "oldest":
+        sortOption = {
+          createdAt: 1,
+        };
+        break;
+
+      case "name-asc":
+        sortOption = {
+          name: 1,
+        };
+        break;
+
+      case "name-desc":
+        sortOption = {
+          name: -1,
+        };
+        break;
+
+      case "last-login":
+        sortOption = {
+          lastLogin: -1,
+        };
+        break;
+
+      case "newest":
+      default:
+        sortOption = {
+          createdAt: -1,
+        };
+        break;
     }
 
-    if (sort === "name-asc") {
-      sortOption = {
-        name: 1,
-      };
-    }
+    // ------------------------------------------------------
+    // Count + users
+    // ------------------------------------------------------
 
-    if (sort === "name-desc") {
-      sortOption = {
-        name: -1,
-      };
-    }
+    const [totalUsers, userList] = await Promise.all([
+      users.countDocuments(query),
 
-    if (sort === "last-login") {
-      sortOption = {
-        lastLogin: -1,
-      };
-    }
-
-    // --------------------------------------------------------
-    // Count + data
-    // --------------------------------------------------------
-
-    const [totalUsers, users] = await Promise.all([
-      usersCollection.countDocuments(query),
-
-      usersCollection
+      users
         .find(query, {
           projection: USER_PROJECTION,
         })
@@ -371,12 +415,12 @@ router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
         .toArray(),
     ]);
 
-    const totalPages = Math.ceil(totalUsers / limit);
+    const totalPages = totalUsers === 0 ? 0 : Math.ceil(totalUsers / limit);
 
     return res.status(200).json({
       success: true,
 
-      users,
+      users: userList,
 
       pagination: {
         total: totalUsers,
@@ -386,7 +430,7 @@ router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
 
         hasNextPage: page < totalPages,
 
-        hasPreviousPage: page > 1,
+        hasPreviousPage: page > 1 && totalPages > 0,
       },
     });
   } catch (error) {
@@ -401,12 +445,20 @@ router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
 
 // ============================================================
 // GET /api/users/:email
-// GET SINGLE USER
+// GET SINGLE USER BY EMAIL
+// ============================================================
+//
+// Normal user:
+//   Can only access own user.
+//
+// Admin:
+//   Can access any user.
+//
 // ============================================================
 
 router.get("/:email", verifyToken, verifyUser, async (req, res) => {
   try {
-    const { usersCollection } = getCollections();
+    const { users } = getCollections();
 
     const requestedEmail = normalizeEmail(req.params.email);
 
@@ -419,20 +471,24 @@ router.get("/:email", verifyToken, verifyUser, async (req, res) => {
 
     const currentUser = req.userData;
 
-    const isAdmin = currentUser.role === "admin";
+    const isAdmin = currentUser?.role === "admin";
 
-    // --------------------------------------------------------
+    // ------------------------------------------------------
     // Normal user can only access own account
-    // --------------------------------------------------------
+    // ------------------------------------------------------
 
-    if (!isAdmin && normalizeEmail(currentUser.email) !== requestedEmail) {
+    if (!isAdmin && normalizeEmail(currentUser?.email) !== requestedEmail) {
       return res.status(403).json({
         success: false,
         message: "You are not allowed to access this user.",
       });
     }
 
-    const user = await usersCollection.findOne(
+    // ------------------------------------------------------
+    // Find user
+    // ------------------------------------------------------
+
+    const user = await users.findOne(
       {
         email: requestedEmail,
       },
@@ -474,16 +530,24 @@ router.patch(
   verifyAdmin,
   async (req, res) => {
     try {
-      const { usersCollection } = getCollections();
+      const { users } = getCollections();
 
       const { id } = req.params;
 
-      if (!ObjectId.isValid(id)) {
+      // ------------------------------------------------------
+      // Validate ObjectId
+      // ------------------------------------------------------
+
+      if (!isValidObjectId(id)) {
         return res.status(400).json({
           success: false,
           message: "Invalid user ID.",
         });
       }
+
+      // ------------------------------------------------------
+      // Validate role
+      // ------------------------------------------------------
 
       const { role } = req.body || {};
 
@@ -496,7 +560,11 @@ router.patch(
 
       const objectId = new ObjectId(id);
 
-      const targetUser = await usersCollection.findOne({
+      // ------------------------------------------------------
+      // Find target user
+      // ------------------------------------------------------
+
+      const targetUser = await users.findOne({
         _id: objectId,
       });
 
@@ -507,6 +575,10 @@ router.patch(
         });
       }
 
+      // ------------------------------------------------------
+      // Prevent self role change
+      // ------------------------------------------------------
+
       if (targetUser.uid === req.user.uid) {
         return res.status(403).json({
           success: false,
@@ -514,7 +586,11 @@ router.patch(
         });
       }
 
-      await usersCollection.updateOne(
+      // ------------------------------------------------------
+      // Update role
+      // ------------------------------------------------------
+
+      await users.updateOne(
         {
           _id: objectId,
         },
@@ -526,7 +602,11 @@ router.patch(
         },
       );
 
-      const updatedUser = await usersCollection.findOne(
+      // ------------------------------------------------------
+      // Get updated user
+      // ------------------------------------------------------
+
+      const updatedUser = await users.findOne(
         {
           _id: objectId,
         },
@@ -563,16 +643,24 @@ router.patch(
   verifyAdmin,
   async (req, res) => {
     try {
-      const { usersCollection } = getCollections();
+      const { users } = getCollections();
 
       const { id } = req.params;
 
-      if (!ObjectId.isValid(id)) {
+      // ------------------------------------------------------
+      // Validate ObjectId
+      // ------------------------------------------------------
+
+      if (!isValidObjectId(id)) {
         return res.status(400).json({
           success: false,
           message: "Invalid user ID.",
         });
       }
+
+      // ------------------------------------------------------
+      // Validate status
+      // ------------------------------------------------------
 
       const { status } = req.body || {};
 
@@ -587,7 +675,11 @@ router.patch(
 
       const objectId = new ObjectId(id);
 
-      const targetUser = await usersCollection.findOne({
+      // ------------------------------------------------------
+      // Find target user
+      // ------------------------------------------------------
+
+      const targetUser = await users.findOne({
         _id: objectId,
       });
 
@@ -598,6 +690,10 @@ router.patch(
         });
       }
 
+      // ------------------------------------------------------
+      // Prevent self status change
+      // ------------------------------------------------------
+
       if (targetUser.uid === req.user.uid) {
         return res.status(403).json({
           success: false,
@@ -605,7 +701,11 @@ router.patch(
         });
       }
 
-      await usersCollection.updateOne(
+      // ------------------------------------------------------
+      // Update status
+      // ------------------------------------------------------
+
+      await users.updateOne(
         {
           _id: objectId,
         },
@@ -617,7 +717,11 @@ router.patch(
         },
       );
 
-      const updatedUser = await usersCollection.findOne(
+      // ------------------------------------------------------
+      // Get updated user
+      // ------------------------------------------------------
+
+      const updatedUser = await users.findOne(
         {
           _id: objectId,
         },
@@ -644,7 +748,13 @@ router.patch(
 
 // ============================================================
 // DELETE /api/users/:id
-// ADMIN: DELETE USER
+// ADMIN: DELETE USER FROM MONGODB
+// ============================================================
+//
+// IMPORTANT:
+// This deletes the MongoDB user document only.
+// It does NOT delete the Firebase Authentication account.
+//
 // ============================================================
 
 router.delete(
@@ -654,11 +764,15 @@ router.delete(
   verifyAdmin,
   async (req, res) => {
     try {
-      const { usersCollection } = getCollections();
+      const { users } = getCollections();
 
       const { id } = req.params;
 
-      if (!ObjectId.isValid(id)) {
+      // ------------------------------------------------------
+      // Validate ObjectId
+      // ------------------------------------------------------
+
+      if (!isValidObjectId(id)) {
         return res.status(400).json({
           success: false,
           message: "Invalid user ID.",
@@ -667,7 +781,11 @@ router.delete(
 
       const objectId = new ObjectId(id);
 
-      const targetUser = await usersCollection.findOne({
+      // ------------------------------------------------------
+      // Find target user
+      // ------------------------------------------------------
+
+      const targetUser = await users.findOne({
         _id: objectId,
       });
 
@@ -678,6 +796,10 @@ router.delete(
         });
       }
 
+      // ------------------------------------------------------
+      // Prevent admin from deleting own account
+      // ------------------------------------------------------
+
       if (targetUser.uid === req.user.uid) {
         return res.status(403).json({
           success: false,
@@ -685,7 +807,11 @@ router.delete(
         });
       }
 
-      const result = await usersCollection.deleteOne({
+      // ------------------------------------------------------
+      // Delete MongoDB user
+      // ------------------------------------------------------
+
+      const result = await users.deleteOne({
         _id: objectId,
       });
 

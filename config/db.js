@@ -51,19 +51,19 @@ async function connectDB() {
 
     db = client.db(dbName);
 
-    usersCollection = db.collection("usersCollection");
+    usersCollection = db.collection("users");
 
-    studentProfilesCollection = db.collection("studentProfilesCollection");
+    studentProfilesCollection = db.collection("studentProfiles");
 
-    alumniProfilesCollection = db.collection("alumniProfilesCollection");
+    alumniProfilesCollection = db.collection("alumniProfiles");
 
-    reunionEventsCollection = db.collection("reunionEventsCollection");
+    reunionEventsCollection = db.collection("reunionEvents");
 
     reunionRegistrationsCollection = db.collection(
-      "reunionRegistrationsCollection",
+      "reunionRegistrations",
     );
 
-    giftPackagesCollection = db.collection("giftPackagesCollection");
+    giftPackagesCollection = db.collection("giftPackages");
 
     await usersCollection.createIndex(
       { uid: 1 },
