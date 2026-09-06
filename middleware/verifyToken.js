@@ -1,9 +1,5 @@
 const { firebaseAuth } = require("../config/firebase");
 
-// ============================================================
-// VERIFY FIREBASE ID TOKEN
-// ============================================================
-
 async function verifyToken(req, res, next) {
   try {
     const authHeader = req.headers.authorization;
@@ -46,10 +42,17 @@ async function verifyToken(req, res, next) {
   }
 }
 
-// ============================================================
-// EXPORT
-// ============================================================
+/*
+|--------------------------------------------------------------------------
+| CommonJS compatible export
+|--------------------------------------------------------------------------
+| Supports:
+| const verifyToken = require(...)
+|
+| and:
+| const { verifyToken } = require(...)
+|--------------------------------------------------------------------------
+*/
 
-module.exports = {
-  verifyToken,
-};
+module.exports = verifyToken;
+module.exports.verifyToken = verifyToken;
