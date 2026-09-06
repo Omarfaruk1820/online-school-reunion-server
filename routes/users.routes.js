@@ -57,7 +57,7 @@ function parsePagination(page, limit) {
 }
 
 function isValidObjectId(id) {
-  return ObjectId.isValid(id);
+  return typeof id === "string" && ObjectId.isValid(id);
 }
 
 // ============================================================
@@ -140,6 +140,43 @@ router.post("/", verifyToken, async (req, res) => {
     const cleanPhoto = cleanString(photo);
 
     // --------------------------------------------------------
+    // Basic validation
+    // --------------------------------------------------------
+
+    if (cleanName.length > 100) {
+      return res.status(400).json({
+        success: false,
+        message: "Name cannot exceed 100 characters.",
+      });
+    }
+
+    if (cleanPhone.length > 30) {
+      return res.status(400).json({
+        success: false,
+        message: "Phone number cannot exceed 30 characters.",
+      });
+    }
+
+    if (cleanPhoto.length > 2000) {
+      return res.status(400).json({
+        success: false,
+        message: "Photo URL is too long.",
+      });
+    }
+
+    if (
+      profile !== undefined &&
+      (typeof profile !== "object" ||
+        profile === null ||
+        Array.isArray(profile))
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Profile must be a valid object.",
+      });
+    }
+
+    // --------------------------------------------------------
     // Provider
     // --------------------------------------------------------
 
@@ -187,7 +224,6 @@ router.post("/", verifyToken, async (req, res) => {
       };
 
       // ------------------------------------------------------
-      // IMPORTANT:
       // Only update profile when valid profile data exists.
       //
       // This prevents accidentally replacing an existing
@@ -199,14 +235,18 @@ router.post("/", verifyToken, async (req, res) => {
       }
 
       await users.updateOne(
-        { uid },
+        {
+          uid,
+        },
         {
           $set: updateData,
         },
       );
 
       const updatedUser = await users.findOne(
-        { uid },
+        {
+          uid,
+        },
         {
           projection: USER_PROJECTION,
         },
@@ -545,20 +585,20 @@ router.patch(
         });
       }
 
+      const objectId = new ObjectId(id);
+
       // ------------------------------------------------------
       // Validate role
       // ------------------------------------------------------
 
-      const { role } = req.body || {};
+      const role = cleanString(req.body?.role);
 
-      if (typeof role !== "string" || !ALLOWED_ROLES.includes(role)) {
+      if (!ALLOWED_ROLES.includes(role)) {
         return res.status(400).json({
           success: false,
           message: `Invalid role. Allowed roles: ${ALLOWED_ROLES.join(", ")}.`,
         });
       }
-
-      const objectId = new ObjectId(id);
 
       // ------------------------------------------------------
       // Find target user
@@ -583,6 +623,18 @@ router.patch(
         return res.status(403).json({
           success: false,
           message: "You cannot change your own role.",
+        });
+      }
+
+      // ------------------------------------------------------
+      // Prevent unnecessary update
+      // ------------------------------------------------------
+
+      if (targetUser.role === role) {
+        return res.status(200).json({
+          success: true,
+          message: "User already has this role.",
+          user: targetUser,
         });
       }
 
@@ -658,13 +710,15 @@ router.patch(
         });
       }
 
+      const objectId = new ObjectId(id);
+
       // ------------------------------------------------------
       // Validate status
       // ------------------------------------------------------
 
-      const { status } = req.body || {};
+      const status = cleanString(req.body?.status);
 
-      if (typeof status !== "string" || !ALLOWED_STATUSES.includes(status)) {
+      if (!ALLOWED_STATUSES.includes(status)) {
         return res.status(400).json({
           success: false,
           message: `Invalid status. Allowed statuses: ${ALLOWED_STATUSES.join(
@@ -672,8 +726,6 @@ router.patch(
           )}.`,
         });
       }
-
-      const objectId = new ObjectId(id);
 
       // ------------------------------------------------------
       // Find target user
@@ -698,6 +750,18 @@ router.patch(
         return res.status(403).json({
           success: false,
           message: "You cannot change your own account status.",
+        });
+      }
+
+      // ------------------------------------------------------
+      // Prevent unnecessary update
+      // ------------------------------------------------------
+
+      if (targetUser.status === status) {
+        return res.status(200).json({
+          success: true,
+          message: "User already has this account status.",
+          user: targetUser,
         });
       }
 

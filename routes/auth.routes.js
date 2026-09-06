@@ -12,24 +12,11 @@ const router = express.Router();
  * POST /api/auth/register
  * ============================================================
  * Create authenticated Firebase user in MongoDB "users" collection.
- *
- * Important:
- * - Firebase handles authentication.
- * - MongoDB stores application user information.
- * - role/status are controlled by the server.
- * - Client cannot choose admin role during registration.
  */
 router.post("/register", verifyToken, async (req, res) => {
   try {
     const { users } = getCollections();
-
     const firebaseUser = req.user;
-
-    const { name, phone, photo, provider, profile } = req.body || {};
-
-    // ----------------------------------------------------------
-    // Authentication validation
-    // ----------------------------------------------------------
 
     if (!firebaseUser?.uid) {
       return res.status(401).json({
@@ -38,19 +25,13 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
+    const { name, phone, photo, provider, profile } = req.body || {};
+
     // ----------------------------------------------------------
-    // Clean incoming data
+    // Validate name
     // ----------------------------------------------------------
 
     const cleanName = typeof name === "string" ? name.trim() : "";
-
-    const cleanPhone = typeof phone === "string" ? phone.trim() : "";
-
-    const cleanPhoto = typeof photo === "string" ? photo.trim() : "";
-
-    // ----------------------------------------------------------
-    // Name validation
-    // ----------------------------------------------------------
 
     if (!cleanName) {
       return res.status(400).json({
@@ -58,6 +39,31 @@ router.post("/register", verifyToken, async (req, res) => {
         message: "Name is required.",
       });
     }
+
+    if (cleanName.length > 100) {
+      return res.status(400).json({
+        success: false,
+        message: "Name must be 100 characters or less.",
+      });
+    }
+
+    // ----------------------------------------------------------
+    // Clean optional fields
+    // ----------------------------------------------------------
+
+    const cleanPhone = typeof phone === "string" ? phone.trim() : "";
+
+    const cleanPhoto = typeof photo === "string" ? photo.trim() : "";
+
+    const cleanProvider =
+      typeof provider === "string" && provider.trim()
+        ? provider.trim()
+        : "password";
+
+    const cleanProfile =
+      profile && typeof profile === "object" && !Array.isArray(profile)
+        ? profile
+        : {};
 
     // ----------------------------------------------------------
     // Check existing user
@@ -76,24 +82,6 @@ router.post("/register", verifyToken, async (req, res) => {
     }
 
     // ----------------------------------------------------------
-    // Determine provider
-    // ----------------------------------------------------------
-
-    const cleanProvider =
-      typeof provider === "string" && provider.trim()
-        ? provider.trim()
-        : firebaseUser.provider || "password";
-
-    // ----------------------------------------------------------
-    // Prepare profile
-    // ----------------------------------------------------------
-
-    const cleanProfile =
-      profile && typeof profile === "object" && !Array.isArray(profile)
-        ? profile
-        : {};
-
-    // ----------------------------------------------------------
     // Create MongoDB user
     // ----------------------------------------------------------
 
@@ -102,7 +90,10 @@ router.post("/register", verifyToken, async (req, res) => {
     const newUser = {
       uid: firebaseUser.uid,
 
-      email: firebaseUser.email?.toLowerCase().trim() || null,
+      email:
+        typeof firebaseUser.email === "string"
+          ? firebaseUser.email.toLowerCase().trim()
+          : null,
 
       name: cleanName,
 
@@ -112,12 +103,10 @@ router.post("/register", verifyToken, async (req, res) => {
 
       provider: cleanProvider,
 
-      // IMPORTANT:
-      // Never trust role from frontend.
+      // Server controlled.
       role: "student",
 
-      // IMPORTANT:
-      // New users are active by default.
+      // Server controlled.
       status: "active",
 
       profile: cleanProfile,
@@ -142,19 +131,14 @@ router.post("/register", verifyToken, async (req, res) => {
       ...newUser,
     };
 
-    // ----------------------------------------------------------
-    // Response
-    // ----------------------------------------------------------
-
     return res.status(201).json({
       success: true,
       message: "User registered successfully.",
       user: createdUser,
     });
   } catch (error) {
-    console.error("POST /auth/register error:", error);
+    console.error("POST /api/auth/register error:", error);
 
-    // MongoDB duplicate key
     if (error?.code === 11000) {
       return res.status(409).json({
         success: false,
@@ -174,10 +158,6 @@ router.post("/register", verifyToken, async (req, res) => {
  * GET /api/auth/me
  * ============================================================
  * Get currently authenticated MongoDB user.
- *
- * Middleware:
- * verifyToken -> verifies Firebase token
- * verifyUser  -> finds MongoDB user and attaches req.userData
  */
 router.get("/me", verifyToken, verifyUser, (req, res) => {
   return res.status(200).json({
@@ -190,26 +170,33 @@ router.get("/me", verifyToken, verifyUser, (req, res) => {
  * ============================================================
  * PATCH /api/auth/me
  * ============================================================
- * Update currently authenticated user's profile.
+ * Update authenticated user's profile.
  *
- * User can update:
+ * Editable:
  * - name
  * - phone
  * - photo
  * - profile
  *
- * User CANNOT update:
+ * Protected:
  * - uid
  * - email
  * - role
  * - status
  * - createdAt
+ * - emailVerified
  */
 router.patch("/me", verifyToken, verifyUser, async (req, res) => {
   try {
     const { users } = getCollections();
+    const uid = req.user?.uid;
 
-    const uid = req.user.uid;
+    if (!uid) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid authentication token.",
+      });
+    }
 
     const { name, phone, photo, profile } = req.body || {};
 
@@ -221,13 +208,27 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
     // Name
     // --------------------------------------------------------
 
-    if (typeof name === "string") {
+    if (name !== undefined) {
+      if (typeof name !== "string") {
+        return res.status(400).json({
+          success: false,
+          message: "Name must be a string.",
+        });
+      }
+
       const cleanName = name.trim();
 
       if (!cleanName) {
         return res.status(400).json({
           success: false,
           message: "Name cannot be empty.",
+        });
+      }
+
+      if (cleanName.length > 100) {
+        return res.status(400).json({
+          success: false,
+          message: "Name must be 100 characters or less.",
         });
       }
 
@@ -238,28 +239,53 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
     // Phone
     // --------------------------------------------------------
 
-    if (typeof phone === "string") {
-      updateData.phone = phone.trim();
+    if (phone !== undefined) {
+      if (typeof phone !== "string") {
+        return res.status(400).json({
+          success: false,
+          message: "Phone must be a string.",
+        });
+      }
+
+      updateData.phone = phone.trim() || null;
     }
 
     // --------------------------------------------------------
     // Photo
     // --------------------------------------------------------
 
-    if (typeof photo === "string") {
-      updateData.photo = photo.trim();
+    if (photo !== undefined) {
+      if (typeof photo !== "string") {
+        return res.status(400).json({
+          success: false,
+          message: "Photo must be a string.",
+        });
+      }
+
+      updateData.photo = photo.trim() || null;
     }
 
     // --------------------------------------------------------
     // Profile
     // --------------------------------------------------------
 
-    if (profile && typeof profile === "object" && !Array.isArray(profile)) {
+    if (profile !== undefined) {
+      if (
+        profile === null ||
+        typeof profile !== "object" ||
+        Array.isArray(profile)
+      ) {
+        return res.status(400).json({
+          success: false,
+          message: "Profile must be a valid object.",
+        });
+      }
+
       updateData.profile = profile;
     }
 
     // --------------------------------------------------------
-    // Check whether there is anything to update
+    // Check update data
     // --------------------------------------------------------
 
     if (Object.keys(updateData).length === 1) {
@@ -279,10 +305,6 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
         $set: updateData,
       },
     );
-
-    // --------------------------------------------------------
-    // User not found
-    // --------------------------------------------------------
 
     if (result.matchedCount === 0) {
       return res.status(404).json({
@@ -305,7 +327,7 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       user: updatedUser,
     });
   } catch (error) {
-    console.error("PATCH /auth/me error:", error);
+    console.error("PATCH /api/auth/me error:", error);
 
     return res.status(500).json({
       success: false,
@@ -321,13 +343,19 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
  * Update user's last activity timestamp.
  *
  * Firebase sign-out happens on the client.
- * This endpoint does NOT invalidate Firebase tokens.
+ * This endpoint does not invalidate Firebase tokens.
  */
 router.post("/logout", verifyToken, async (req, res) => {
   try {
     const { users } = getCollections();
+    const uid = req.user?.uid;
 
-    const uid = req.user.uid;
+    if (!uid) {
+      return res.status(401).json({
+        success: false,
+        message: "Invalid authentication token.",
+      });
+    }
 
     const result = await users.updateOne(
       { uid },
@@ -350,7 +378,7 @@ router.post("/logout", verifyToken, async (req, res) => {
       message: "Logout successful.",
     });
   } catch (error) {
-    console.error("POST /auth/logout error:", error);
+    console.error("POST /api/auth/logout error:", error);
 
     return res.status(500).json({
       success: false,

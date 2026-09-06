@@ -7,11 +7,11 @@ const password = process.env.DB_PASS;
 const dbName = process.env.MONGODB_DB_NAME || "school-reunion";
 
 if (!username) {
-  throw new Error("DB_USERNAME is missing from .env");
+  throw new Error("DB_USERNAME is missing.");
 }
 
 if (!password) {
-  throw new Error("DB_PASS is missing from .env");
+  throw new Error("DB_PASS is missing.");
 }
 
 const uri =
@@ -30,71 +30,75 @@ const client = new MongoClient(uri, {
 
 let db = null;
 
-let usersCollection = null;
-let studentProfilesCollection = null;
-let alumniProfilesCollection = null;
-let reunionEventsCollection = null;
-let reunionRegistrationsCollection = null;
-let giftPackagesCollection = null;
+let users = null;
+let studentProfiles = null;
+let alumniProfiles = null;
+let reunionEvents = null;
+let reunionRegistrations = null;
+let giftPackages = null;
+
+let connectionPromise = null;
 
 async function connectDB() {
-  try {
-    if (db) {
-      return db;
-    }
-
-    await client.connect();
-
-    await client.db("admin").command({
-      ping: 1,
-    });
-
-    db = client.db(dbName);
-
-    usersCollection = db.collection("users");
-
-    studentProfilesCollection = db.collection("studentProfiles");
-
-    alumniProfilesCollection = db.collection("alumniProfiles");
-
-    reunionEventsCollection = db.collection("reunionEvents");
-
-    reunionRegistrationsCollection = db.collection(
-      "reunionRegistrations",
-    );
-
-    giftPackagesCollection = db.collection("giftPackages");
-
-    await usersCollection.createIndex(
-      { uid: 1 },
-      {
-        unique: true,
-        name: "unique_firebase_uid",
-      },
-    );
-
-    await usersCollection.createIndex(
-      { email: 1 },
-      {
-        name: "email_index",
-      },
-    );
-
-    console.log(`MongoDB connected successfully. Database: ${dbName}`);
-
-    console.log("MongoDB collections initialized.");
-
+  if (db) {
     return db;
-  } catch (error) {
-    console.error("MongoDB connection failed:", error.message);
-
-    throw error;
   }
+
+  if (connectionPromise) {
+    return connectionPromise;
+  }
+
+  connectionPromise = (async () => {
+    try {
+      await client.connect();
+
+      await client.db("admin").command({
+        ping: 1,
+      });
+
+      db = client.db(dbName);
+
+      users = db.collection("users");
+      studentProfiles = db.collection("studentProfiles");
+      alumniProfiles = db.collection("alumniProfiles");
+      reunionEvents = db.collection("reunionEvents");
+      reunionRegistrations = db.collection("reunionRegistrations");
+      giftPackages = db.collection("giftPackages");
+
+      await users.createIndex(
+        { uid: 1 },
+        {
+          unique: true,
+          name: "unique_firebase_uid",
+        },
+      );
+
+      await users.createIndex(
+        { email: 1 },
+        {
+          name: "email_index",
+        },
+      );
+
+      console.log(`MongoDB connected successfully. Database: ${dbName}`);
+      console.log("MongoDB collections initialized.");
+
+      return db;
+    } catch (error) {
+      connectionPromise = null;
+
+      console.error("MongoDB connection failed:", error?.message || error);
+
+      throw error;
+    }
+  })();
+
+  return connectionPromise;
 }
 
 function getDB() {
   if (!db) {
-    throw new Error("MongoDB is not connected.");
+    throw new Error("MongoDB is not connected. Call connectDB() first.");
   }
 
   return db;
@@ -102,16 +106,16 @@ function getDB() {
 
 function getCollections() {
   if (!db) {
-    throw new Error("MongoDB is not connected.");
+    throw new Error("MongoDB is not connected. Call connectDB() first.");
   }
 
   return {
-    usersCollection,
-    studentProfilesCollection,
-    alumniProfilesCollection,
-    reunionEventsCollection,
-    reunionRegistrationsCollection,
-    giftPackagesCollection,
+    users,
+    studentProfiles,
+    alumniProfiles,
+    reunionEvents,
+    reunionRegistrations,
+    giftPackages,
   };
 }
 
