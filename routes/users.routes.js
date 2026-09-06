@@ -9,6 +9,10 @@ const { getCollections } = require("../config/db");
 
 const router = express.Router();
 
+console.log("verifyToken type:", typeof verifyToken);
+console.log("verifyUser type:", typeof verifyUser);
+console.log("verifyAdmin type:", typeof verifyAdmin);
+
 // ============================================================
 // CONSTANTS
 // ============================================================
