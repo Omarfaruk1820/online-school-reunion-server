@@ -1,7 +1,21 @@
 const express = require("express");
 const { ObjectId } = require("mongodb");
 
-const verifyToken = require("../middleware/verifyToken");
+const verifyTokenModule = require("../middleware/verifyToken");
+
+const verifyToken =
+  typeof verifyTokenModule === "function"
+    ? verifyTokenModule
+    : typeof verifyTokenModule.verifyToken === "function"
+      ? verifyTokenModule.verifyToken
+      : typeof verifyTokenModule.default === "function"
+        ? verifyTokenModule.default
+        : null;
+
+if (typeof verifyToken !== "function") {
+  throw new TypeError("verifyToken middleware could not be loaded.");
+}
+
 const verifyUser = require("../middleware/verifyUser");
 const verifyAdmin = require("../middleware/verifyAdmin");
 

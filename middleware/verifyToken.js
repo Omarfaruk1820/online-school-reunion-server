@@ -42,17 +42,5 @@ async function verifyToken(req, res, next) {
   }
 }
 
-/*
-|--------------------------------------------------------------------------
-| CommonJS compatible export
-|--------------------------------------------------------------------------
-| Supports:
-| const verifyToken = require(...)
-|
-| and:
-| const { verifyToken } = require(...)
-|--------------------------------------------------------------------------
-*/
-
 module.exports = verifyToken;
 module.exports.verifyToken = verifyToken;
