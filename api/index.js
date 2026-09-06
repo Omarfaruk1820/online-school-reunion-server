@@ -23,15 +23,22 @@ if (isProduction) {
 // CORS
 // ============================================================
 
+// ============================================================
+// CORS
+// ============================================================
+
 const clientUrls = (process.env.CLIENT_URL || "")
   .split(",")
   .map((url) => url.trim())
   .filter(Boolean);
 
+console.log("Allowed CORS origins:", clientUrls);
+
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow non-browser requests
+      // Allow requests without an Origin header
+      // Example: Postman, server-to-server requests
       if (!origin) {
         return callback(null, true);
       }
@@ -40,7 +47,9 @@ app.use(
         return callback(null, true);
       }
 
-      return callback(new Error("Not allowed by CORS"));
+      console.warn("CORS blocked origin:", origin);
+
+      return callback(null, false);
     },
 
     credentials: true,
@@ -48,6 +57,8 @@ app.use(
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 
     allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+
+    optionsSuccessStatus: 204,
   }),
 );
 
