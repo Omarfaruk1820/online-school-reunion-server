@@ -2,16 +2,28 @@ import { getCollections } from "../config/db.js";
 
 const verifyUser = async (req, res, next) => {
   try {
-    if (!req.user || !req.user.uid) {
+    // ========================================================
+    // CHECK AUTHENTICATED USER
+    // ========================================================
+
+    if (!req.user?.uid) {
       return res.status(401).json({
         success: false,
         message: "Authentication required.",
       });
     }
 
-    const { usersCollection } = getCollections();
+    // ========================================================
+    // GET USERS COLLECTION
+    // ========================================================
 
-    const user = await usersCollection.findOne(
+    const { users } = getCollections();
+
+    // ========================================================
+    // FIND USER
+    // ========================================================
+
+    const user = await users.findOne(
       {
         uid: req.user.uid,
       },
@@ -35,12 +47,20 @@ const verifyUser = async (req, res, next) => {
       },
     );
 
+    // ========================================================
+    // USER NOT FOUND
+    // ========================================================
+
     if (!user) {
       return res.status(404).json({
         success: false,
         message: "User account not found.",
       });
     }
+
+    // ========================================================
+    // CHECK USER STATUS
+    // ========================================================
 
     if (user.status !== "active") {
       return res.status(403).json({
@@ -49,11 +69,18 @@ const verifyUser = async (req, res, next) => {
       });
     }
 
+    // ========================================================
+    // ATTACH DATABASE USER
+    // ========================================================
+
     req.userData = user;
 
     return next();
   } catch (error) {
-    console.error("User verification error:", error.message);
+    console.error("User verification error:", {
+      message: error?.message || "Unknown error",
+      code: error?.code || "UNKNOWN",
+    });
 
     return res.status(500).json({
       success: false,
