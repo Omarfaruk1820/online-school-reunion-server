@@ -1,10 +1,10 @@
 import express from "express";
+
 import { ObjectId } from "mongodb";
 
 import verifyToken from "../middleware/verifyToken.js";
 import verifyUser from "../middleware/verifyUser.js";
 import verifyAdmin from "../middleware/verifyAdmin.js";
-
 import { getCollections } from "../config/db.js";
 
 const router = express.Router();
@@ -61,14 +61,15 @@ function isValidObjectId(id) {
 }
 
 // ============================================================
-// USER PROJECTION
+// PHONE VALIDATION
 // ============================================================
-//
-// Only fields required by the frontend/admin dashboard are
-// returned.
-//
-// Never expose unnecessary internal fields.
-//
+
+function isValidBangladeshiPhone(phone) {
+  return /^01[3-9]\d{8}$/.test(phone);
+}
+
+// ============================================================
+// USER PROJECTION
 // ============================================================
 
 const USER_PROJECTION = {
@@ -105,7 +106,6 @@ const USER_PROJECTION = {
 // Server gets identity from Firebase token.
 //
 // ============================================================
-
 router.post("/", verifyToken, async (req, res) => {
   try {
     const { users } = getCollections();
@@ -129,8 +129,6 @@ router.post("/", verifyToken, async (req, res) => {
 
     // --------------------------------------------------------
     // Client profile data
-    //
-    // role and status are intentionally ignored.
     // --------------------------------------------------------
 
     const { name, phone, photo, profile } = req.body || {};
@@ -140,7 +138,7 @@ router.post("/", verifyToken, async (req, res) => {
     const cleanPhoto = cleanString(photo);
 
     // --------------------------------------------------------
-    // Basic validation
+    // Validate name
     // --------------------------------------------------------
 
     if (cleanName.length > 100) {
@@ -150,12 +148,27 @@ router.post("/", verifyToken, async (req, res) => {
       });
     }
 
-    if (cleanPhone.length > 30) {
+    // --------------------------------------------------------
+    // Validate phone
+    // --------------------------------------------------------
+
+    if (!cleanPhone) {
       return res.status(400).json({
         success: false,
-        message: "Phone number cannot exceed 30 characters.",
+        message: "Phone number is required.",
       });
     }
+
+    if (!/^01[3-9]\d{8}$/.test(cleanPhone)) {
+      return res.status(400).json({
+        success: false,
+        message: "Enter a valid Bangladeshi phone number.",
+      });
+    }
+
+    // --------------------------------------------------------
+    // Validate photo
+    // --------------------------------------------------------
 
     if (cleanPhoto.length > 2000) {
       return res.status(400).json({
@@ -163,6 +176,10 @@ router.post("/", verifyToken, async (req, res) => {
         message: "Photo URL is too long.",
       });
     }
+
+    // --------------------------------------------------------
+    // Validate profile
+    // --------------------------------------------------------
 
     if (
       profile !== undefined &&
@@ -209,7 +226,11 @@ router.post("/", verifyToken, async (req, res) => {
           firebaseUser.name ||
           "School Member",
 
-        phone: cleanPhone || existingUser.phone || "",
+        /*
+         * IMPORTANT:
+         * Always use the submitted phone when available.
+         */
+        phone: cleanPhone,
 
         photo: cleanPhoto || existingUser.photo || firebaseUser.picture || "",
 
@@ -224,10 +245,7 @@ router.post("/", verifyToken, async (req, res) => {
       };
 
       // ------------------------------------------------------
-      // Only update profile when valid profile data exists.
-      //
-      // This prevents accidentally replacing an existing
-      // profile with {} during every login.
+      // Update profile only when supplied
       // ------------------------------------------------------
 
       if (profile && typeof profile === "object" && !Array.isArray(profile)) {
@@ -272,18 +290,20 @@ router.post("/", verifyToken, async (req, res) => {
 
       name: cleanName || firebaseUser.name || "School Member",
 
-      phone: cleanPhone || null,
+      /*
+       * IMPORTANT:
+       * Actual phone number is stored here.
+       */
+      phone: cleanPhone,
 
       photo: cleanPhoto || firebaseUser.picture || null,
 
       provider,
 
-      // ------------------------------------------------------
-      // SERVER CONTROLLED
-      // ------------------------------------------------------
-
+      // Server controlled
       role: "student",
 
+      // Server controlled
       status: "active",
 
       emailVerified: firebaseUser.emailVerified === true,
@@ -301,7 +321,7 @@ router.post("/", verifyToken, async (req, res) => {
     };
 
     // --------------------------------------------------------
-    // Insert
+    // Insert user
     // --------------------------------------------------------
 
     const result = await users.insertOne(newUser);
@@ -321,7 +341,7 @@ router.post("/", verifyToken, async (req, res) => {
       user: createdUser,
     });
   } catch (error) {
-    console.error("POST /users error:", error);
+    console.error("POST /api/users error:", error);
 
     // MongoDB duplicate key
     if (error?.code === 11000) {

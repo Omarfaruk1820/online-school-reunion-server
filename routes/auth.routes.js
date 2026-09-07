@@ -25,7 +25,7 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    const { name, phone, photo, provider, profile } = req.body || {};
+    const { name, phone } = req.body || {};
 
     // ----------------------------------------------------------
     // Validate name
@@ -48,22 +48,24 @@ router.post("/register", verifyToken, async (req, res) => {
     }
 
     // ----------------------------------------------------------
-    // Clean optional fields
+    // Validate phone
     // ----------------------------------------------------------
 
     const cleanPhone = typeof phone === "string" ? phone.trim() : "";
 
-    const cleanPhoto = typeof photo === "string" ? photo.trim() : "";
+    if (!cleanPhone) {
+      return res.status(400).json({
+        success: false,
+        message: "Phone number is required.",
+      });
+    }
 
-    const cleanProvider =
-      typeof provider === "string" && provider.trim()
-        ? provider.trim()
-        : "password";
-
-    const cleanProfile =
-      profile && typeof profile === "object" && !Array.isArray(profile)
-        ? profile
-        : {};
+    if (!/^01[3-9]\d{8}$/.test(cleanPhone)) {
+      return res.status(400).json({
+        success: false,
+        message: "Enter a valid Bangladeshi phone number.",
+      });
+    }
 
     // ----------------------------------------------------------
     // Check existing user
@@ -97,19 +99,19 @@ router.post("/register", verifyToken, async (req, res) => {
 
       name: cleanName,
 
-      phone: cleanPhone || null,
+      phone: cleanPhone,
 
-      photo: cleanPhoto || firebaseUser.picture || null,
+      photo: firebaseUser.picture || null,
 
-      provider: cleanProvider,
+      provider: "password",
 
-      // Server controlled.
+      // Server controlled
       role: "student",
 
-      // Server controlled.
+      // Server controlled
       status: "active",
 
-      profile: cleanProfile,
+      profile: {},
 
       emailVerified: firebaseUser.emailVerified === true,
 
