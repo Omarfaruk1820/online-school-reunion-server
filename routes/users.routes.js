@@ -21,6 +21,8 @@ const ALLOWED_ROLES = ["student", "admin"];
 
 const ALLOWED_STATUSES = ["active", "inactive", "blocked"];
 
+const PHONE_REGEX = /^01[3-9]\d{8}$/;
+
 // ============================================================
 // HELPERS
 // ============================================================
@@ -42,7 +44,7 @@ function isValidObjectId(id) {
 }
 
 function isValidBangladeshiPhone(phone) {
-  return /^01[3-9]\d{8}$/.test(phone);
+  return PHONE_REGEX.test(phone);
 }
 
 function parsePagination(page, limit) {
@@ -86,19 +88,7 @@ const USER_PROJECTION = {
 };
 
 // ============================================================
-// USER RESPONSE SANITIZER
-// ============================================================
-// Important:
-// If photo is null / empty, the "photo" field is removed
-// completely from API response.
-//
-// Example:
-//
-// photo: null
-//
-// becomes:
-//
-// no photo field
+// SANITIZE USER
 // ============================================================
 
 function sanitizeUser(user) {
@@ -110,12 +100,29 @@ function sanitizeUser(user) {
     ...user,
   };
 
+  // ----------------------------------------------------------
+  // Never expose empty/null photo
+  // ----------------------------------------------------------
+
   const cleanPhoto = cleanString(sanitizedUser.photo);
 
   if (cleanPhoto) {
     sanitizedUser.photo = cleanPhoto;
   } else {
     delete sanitizedUser.photo;
+  }
+
+  // ----------------------------------------------------------
+  // Phone handling
+  //
+  // IMPORTANT:
+  // - Actual phone remains unchanged.
+  // - Google user may legitimately have null phone.
+  // - We do NOT convert null into empty string.
+  // ----------------------------------------------------------
+
+  if (sanitizedUser.phone !== null && typeof sanitizedUser.phone !== "string") {
+    delete sanitizedUser.phone;
   }
 
   return sanitizedUser;
@@ -131,24 +138,7 @@ function sanitizeUsers(users) {
 
 // ============================================================
 // POST /api/users
-// CREATE / SYNC CURRENT FIREBASE USER
-// ============================================================
-//
-// Firebase
-//    ↓
-// Authentication
-//
-// MongoDB "users"
-//    ↓
-// Application user data
-//
-// Client cannot control:
-// - uid
-// - email
-// - role
-// - status
-//
-// Identity always comes from Firebase token.
+// CREATE / SYNCHRONIZE USER
 // ============================================================
 
 router.post("/", verifyToken, async (req, res) => {
@@ -183,8 +173,24 @@ router.post("/", verifyToken, async (req, res) => {
     const cleanPhoto = cleanString(photo);
 
     // --------------------------------------------------------
-    // Validate name
+    // Provider
+    //
+    // Provider is determined from Firebase identity.
+    // We do not trust the client to decide it.
     // --------------------------------------------------------
+
+    const firebaseProvider = cleanString(firebaseUser.provider);
+
+    const provider =
+      firebaseProvider === "google.com"
+        ? "google"
+        : firebaseProvider || "password";
+
+    const isGoogleProvider = provider === "google";
+
+    // ========================================================
+    // VALIDATE NAME
+    // ========================================================
 
     if (cleanName.length > 100) {
       return res.status(400).json({
@@ -193,27 +199,47 @@ router.post("/", verifyToken, async (req, res) => {
       });
     }
 
-    // --------------------------------------------------------
-    // Validate phone
-    // --------------------------------------------------------
+    // ========================================================
+    // VALIDATE PHONE
+    // ========================================================
 
-    if (!cleanPhone) {
+    /*
+     * EMAIL/PASSWORD:
+     * Phone is REQUIRED.
+     *
+     * GOOGLE:
+     * Phone is OPTIONAL.
+     *
+     * Therefore:
+     *
+     * password + empty phone
+     *        => 400
+     *
+     * google + empty phone
+     *        => allowed
+     *
+     * google + valid phone
+     *        => allowed
+     */
+
+    if (!isGoogleProvider && !cleanPhone) {
       return res.status(400).json({
         success: false,
         message: "Phone number is required.",
       });
     }
 
-    if (!isValidBangladeshiPhone(cleanPhone)) {
+    // If a phone number is provided, it must always be valid.
+    if (cleanPhone && !isValidBangladeshiPhone(cleanPhone)) {
       return res.status(400).json({
         success: false,
         message: "Enter a valid Bangladeshi phone number.",
       });
     }
 
-    // --------------------------------------------------------
-    // Validate photo
-    // --------------------------------------------------------
+    // ========================================================
+    // VALIDATE PHOTO
+    // ========================================================
 
     if (cleanPhoto.length > 2000) {
       return res.status(400).json({
@@ -222,9 +248,9 @@ router.post("/", verifyToken, async (req, res) => {
       });
     }
 
-    // --------------------------------------------------------
-    // Validate profile
-    // --------------------------------------------------------
+    // ========================================================
+    // VALIDATE PROFILE
+    // ========================================================
 
     if (
       profile !== undefined &&
@@ -238,20 +264,9 @@ router.post("/", verifyToken, async (req, res) => {
       });
     }
 
-    // --------------------------------------------------------
-    // Provider
-    // --------------------------------------------------------
-
-    const firebaseProvider = cleanString(firebaseUser.provider);
-
-    const provider =
-      firebaseProvider === "google.com"
-        ? "google"
-        : firebaseProvider || "password";
-
-    // --------------------------------------------------------
-    // Find existing user
-    // --------------------------------------------------------
+    // ========================================================
+    // FIND EXISTING USER
+    // ========================================================
 
     const existingUser = await users.findOne({
       uid,
@@ -264,80 +279,105 @@ router.post("/", verifyToken, async (req, res) => {
     if (existingUser) {
       const now = new Date();
 
-      const updateData = {
-        email: firebaseEmail || existingUser.email || "",
+      const existingPhone =
+        typeof existingUser.phone === "string" ? existingUser.phone.trim() : "";
 
-        name:
-          cleanName ||
-          existingUser.name ||
-          cleanString(firebaseUser.name) ||
-          "School Member",
+      const updateOperation = {
+        $set: {
+          email: firebaseEmail || existingUser.email || "",
 
-        // Actual submitted phone number
-        phone: cleanPhone,
+          name:
+            cleanName ||
+            existingUser.name ||
+            cleanString(firebaseUser.name) ||
+            "School Member",
 
-        provider: existingUser.provider || provider,
+          provider: existingUser.provider || provider,
 
-        emailVerified: firebaseUser.emailVerified === true,
+          emailVerified: firebaseUser.emailVerified === true,
 
-        lastLogin: now,
+          lastLogin: now,
 
-        updatedAt: now,
+          updatedAt: now,
+        },
       };
 
       // ------------------------------------------------------
-      // Photo
+      // PHONE
+      // ------------------------------------------------------
+
+      /*
+       * IMPORTANT:
+       *
+       * If Google login does not provide a phone:
+       *
+       * cleanPhone = ""
+       *
+       * We DO NOT overwrite an existing phone.
+       *
+       * Example:
+       *
+       * Existing user:
+       * phone: "01822637989"
+       *
+       * Google login:
+       * phone: ""
+       *
+       * Result:
+       * phone remains "01822637989"
+       *
+       * If the existing Google user has no phone:
+       * phone remains null.
+       */
+
+      if (cleanPhone) {
+        updateOperation.$set.phone = cleanPhone;
+      }
+
+      // ------------------------------------------------------
+      // PHOTO
       // ------------------------------------------------------
 
       if (cleanPhoto) {
-        updateData.photo = cleanPhoto;
+        updateOperation.$set.photo = cleanPhoto;
       } else if (existingUser.photo && cleanString(existingUser.photo)) {
-        updateData.photo = cleanString(existingUser.photo);
+        updateOperation.$set.photo = cleanString(existingUser.photo);
       } else if (firebaseUser.picture && cleanString(firebaseUser.picture)) {
-        updateData.photo = cleanString(firebaseUser.picture);
+        updateOperation.$set.photo = cleanString(firebaseUser.picture);
       } else {
-        // Do not store null/empty photo unnecessarily.
-        // If an old empty value exists, remove it.
-        updateData.$unset = {
+        updateOperation.$unset = {
           photo: "",
         };
       }
 
       // ------------------------------------------------------
-      // Profile
+      // PROFILE
       // ------------------------------------------------------
 
       if (profile && typeof profile === "object" && !Array.isArray(profile)) {
-        updateData.profile = profile;
+        updateOperation.$set.profile = profile;
+      }
+
+      // ------------------------------------------------------
+      // IMPORTANT:
+      //
+      // If this is an existing manual/password user and the
+      // database already contains an actual phone, never remove it.
+      //
+      // If this is an existing Google user with null phone and
+      // no new phone is provided, null remains untouched.
+      // ------------------------------------------------------
+
+      if (!cleanPhone && !isGoogleProvider && !existingPhone) {
+        return res.status(400).json({
+          success: false,
+          message: "Phone number is required.",
+        });
       }
 
       // ------------------------------------------------------
       // MongoDB update
       // ------------------------------------------------------
-
-      const updateOperation = {
-        $set: {
-          email: updateData.email,
-          name: updateData.name,
-          phone: updateData.phone,
-          provider: updateData.provider,
-          emailVerified: updateData.emailVerified,
-          lastLogin: updateData.lastLogin,
-          updatedAt: updateData.updatedAt,
-        },
-      };
-
-      // Photo
-      if (updateData.photo) {
-        updateOperation.$set.photo = updateData.photo;
-      } else if (updateData.$unset) {
-        updateOperation.$unset = updateData.$unset;
-      }
-
-      // Profile
-      if (updateData.profile) {
-        updateOperation.$set.profile = updateData.profile;
-      }
 
       await users.updateOne(
         {
@@ -370,17 +410,49 @@ router.post("/", verifyToken, async (req, res) => {
     // CREATE NEW USER
     // ========================================================
 
+    /*
+     * For a NEW password user:
+     *
+     * phone must exist.
+     *
+     * For a NEW Google user:
+     *
+     * phone can be empty.
+     */
+
+    if (!isGoogleProvider && !cleanPhone) {
+      return res.status(400).json({
+        success: false,
+        message: "Phone number is required.",
+      });
+    }
+
     const now = new Date();
 
     const newUser = {
       uid,
 
+      /*
+       * Email should normally exist because Firebase
+       * authentication provides it.
+       */
       email: firebaseEmail || null,
 
       name: cleanName || cleanString(firebaseUser.name) || "School Member",
 
-      // Actual phone number
-      phone: cleanPhone,
+      /*
+       * IMPORTANT:
+       *
+       * Manual registration:
+       * phone: "01822637989"
+       *
+       * Google without phone:
+       * phone: null
+       *
+       * Google with phone:
+       * phone: "01822637989"
+       */
+      phone: cleanPhone || null,
 
       provider,
 
@@ -462,18 +534,18 @@ router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
   try {
     const { users } = getCollections();
 
-    // ------------------------------------------------------
+    // --------------------------------------------------------
     // Pagination
-    // ------------------------------------------------------
+    // --------------------------------------------------------
 
     const { page, limit, skip } = parsePagination(
       req.query.page,
       req.query.limit,
     );
 
-    // ------------------------------------------------------
+    // --------------------------------------------------------
     // Search
-    // ------------------------------------------------------
+    // --------------------------------------------------------
 
     const search = cleanString(req.query.search);
 
@@ -512,9 +584,9 @@ router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
       ];
     }
 
-    // ------------------------------------------------------
+    // --------------------------------------------------------
     // Sorting
-    // ------------------------------------------------------
+    // --------------------------------------------------------
 
     let sortOption = {
       createdAt: -1,
@@ -553,9 +625,9 @@ router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
         break;
     }
 
-    // ------------------------------------------------------
+    // --------------------------------------------------------
     // Count + users
-    // ------------------------------------------------------
+    // --------------------------------------------------------
 
     const [totalUsers, userList] = await Promise.all([
       users.countDocuments(query),
@@ -620,9 +692,9 @@ router.get("/:email", verifyToken, verifyUser, async (req, res) => {
 
     const isAdmin = currentUser?.role === "admin";
 
-    // ------------------------------------------------------
+    // --------------------------------------------------------
     // Normal user can only access own account
-    // ------------------------------------------------------
+    // --------------------------------------------------------
 
     if (!isAdmin && normalizeEmail(currentUser?.email) !== requestedEmail) {
       return res.status(403).json({
@@ -631,9 +703,9 @@ router.get("/:email", verifyToken, verifyUser, async (req, res) => {
       });
     }
 
-    // ------------------------------------------------------
+    // --------------------------------------------------------
     // Find user
-    // ------------------------------------------------------
+    // --------------------------------------------------------
 
     const user = await users.findOne(
       {
