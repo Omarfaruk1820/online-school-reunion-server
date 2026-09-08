@@ -7,15 +7,43 @@ import { getCollections } from "../config/db.js";
 
 const router = express.Router();
 
-/**
- * ============================================================
- * POST /api/auth/register
- * ============================================================
- * Create authenticated Firebase user in MongoDB "users" collection.
- */
+// ============================================================
+// HELPERS
+// ============================================================
+
+const normalizeName = (value) => {
+  return typeof value === "string" ? value.trim() : "";
+};
+
+const normalizePhone = (value) => {
+  return typeof value === "string" ? value.trim() : "";
+};
+
+const normalizePhoto = (value) => {
+  return typeof value === "string" ? value.trim() : "";
+};
+
+const normalizeEmail = (value) => {
+  return typeof value === "string" ? value.trim().toLowerCase() : null;
+};
+
+const isValidBangladeshiPhone = (phone) => {
+  return /^01[3-9]\d{8}$/.test(phone);
+};
+
+// ============================================================
+// POST /api/auth/register
+// ============================================================
+// Compatibility endpoint.
+//
+// Main Firebase → MongoDB synchronization is handled through
+// POST /api/users in the current frontend flow.
+// ============================================================
+
 router.post("/register", verifyToken, async (req, res) => {
   try {
     const { users } = getCollections();
+
     const firebaseUser = req.user;
 
     if (!firebaseUser?.uid) {
@@ -25,13 +53,12 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    const { name, phone } = req.body || {};
+    const cleanName = normalizeName(req.body?.name);
+    const cleanPhone = normalizePhone(req.body?.phone);
 
     // ----------------------------------------------------------
     // Validate name
     // ----------------------------------------------------------
-
-    const cleanName = typeof name === "string" ? name.trim() : "";
 
     if (!cleanName) {
       return res.status(400).json({
@@ -51,8 +78,6 @@ router.post("/register", verifyToken, async (req, res) => {
     // Validate phone
     // ----------------------------------------------------------
 
-    const cleanPhone = typeof phone === "string" ? phone.trim() : "";
-
     if (!cleanPhone) {
       return res.status(400).json({
         success: false,
@@ -60,7 +85,7 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    if (!/^01[3-9]\d{8}$/.test(cleanPhone)) {
+    if (!isValidBangladeshiPhone(cleanPhone)) {
       return res.status(400).json({
         success: false,
         message: "Enter a valid Bangladeshi phone number.",
@@ -84,7 +109,7 @@ router.post("/register", verifyToken, async (req, res) => {
     }
 
     // ----------------------------------------------------------
-    // Create MongoDB user
+    // Create user
     // ----------------------------------------------------------
 
     const now = new Date();
@@ -92,16 +117,16 @@ router.post("/register", verifyToken, async (req, res) => {
     const newUser = {
       uid: firebaseUser.uid,
 
-      email:
-        typeof firebaseUser.email === "string"
-          ? firebaseUser.email.toLowerCase().trim()
-          : null,
+      email: normalizeEmail(firebaseUser.email),
 
       name: cleanName,
 
       phone: cleanPhone,
 
-      photo: firebaseUser.picture || null,
+      photo:
+        typeof firebaseUser.picture === "string"
+          ? firebaseUser.picture.trim()
+          : null,
 
       provider: "password",
 
@@ -122,10 +147,6 @@ router.post("/register", verifyToken, async (req, res) => {
       lastLogin: now,
     };
 
-    // ----------------------------------------------------------
-    // Insert user
-    // ----------------------------------------------------------
-
     const result = await users.insertOne(newUser);
 
     const createdUser = {
@@ -141,6 +162,7 @@ router.post("/register", verifyToken, async (req, res) => {
   } catch (error) {
     console.error("POST /api/auth/register error:", error);
 
+    // MongoDB duplicate key
     if (error?.code === 11000) {
       return res.status(409).json({
         success: false,
@@ -155,12 +177,12 @@ router.post("/register", verifyToken, async (req, res) => {
   }
 });
 
-/**
- * ============================================================
- * GET /api/auth/me
- * ============================================================
- * Get currently authenticated MongoDB user.
- */
+// ============================================================
+// GET /api/auth/me
+// ============================================================
+// Get currently authenticated MongoDB user.
+// ============================================================
+
 router.get("/me", verifyToken, verifyUser, (req, res) => {
   return res.status(200).json({
     success: true,
@@ -168,29 +190,30 @@ router.get("/me", verifyToken, verifyUser, (req, res) => {
   });
 });
 
-/**
- * ============================================================
- * PATCH /api/auth/me
- * ============================================================
- * Update authenticated user's profile.
- *
- * Editable:
- * - name
- * - phone
- * - photo
- * - profile
- *
- * Protected:
- * - uid
- * - email
- * - role
- * - status
- * - createdAt
- * - emailVerified
- */
+// ============================================================
+// PATCH /api/auth/me
+// ============================================================
+// Update authenticated user's profile.
+//
+// Editable:
+// - name
+// - phone
+// - photo
+// - profile
+//
+// Protected:
+// - uid
+// - email
+// - role
+// - status
+// - createdAt
+// - emailVerified
+// ============================================================
+
 router.patch("/me", verifyToken, verifyUser, async (req, res) => {
   try {
     const { users } = getCollections();
+
     const uid = req.user?.uid;
 
     if (!uid) {
@@ -206,9 +229,9 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       updatedAt: new Date(),
     };
 
-    // --------------------------------------------------------
+    // ----------------------------------------------------------
     // Name
-    // --------------------------------------------------------
+    // ----------------------------------------------------------
 
     if (name !== undefined) {
       if (typeof name !== "string") {
@@ -237,9 +260,9 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       updateData.name = cleanName;
     }
 
-    // --------------------------------------------------------
+    // ----------------------------------------------------------
     // Phone
-    // --------------------------------------------------------
+    // ----------------------------------------------------------
 
     if (phone !== undefined) {
       if (typeof phone !== "string") {
@@ -249,12 +272,28 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
         });
       }
 
-      updateData.phone = phone.trim() || null;
+      const cleanPhone = phone.trim();
+
+      if (!cleanPhone) {
+        return res.status(400).json({
+          success: false,
+          message: "Phone number cannot be empty.",
+        });
+      }
+
+      if (!isValidBangladeshiPhone(cleanPhone)) {
+        return res.status(400).json({
+          success: false,
+          message: "Enter a valid Bangladeshi phone number.",
+        });
+      }
+
+      updateData.phone = cleanPhone;
     }
 
-    // --------------------------------------------------------
+    // ----------------------------------------------------------
     // Photo
-    // --------------------------------------------------------
+    // ----------------------------------------------------------
 
     if (photo !== undefined) {
       if (typeof photo !== "string") {
@@ -267,9 +306,9 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       updateData.photo = photo.trim() || null;
     }
 
-    // --------------------------------------------------------
+    // ----------------------------------------------------------
     // Profile
-    // --------------------------------------------------------
+    // ----------------------------------------------------------
 
     if (profile !== undefined) {
       if (
@@ -286,9 +325,9 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       updateData.profile = profile;
     }
 
-    // --------------------------------------------------------
-    // Check update data
-    // --------------------------------------------------------
+    // ----------------------------------------------------------
+    // Check whether there is anything to update
+    // ----------------------------------------------------------
 
     if (Object.keys(updateData).length === 1) {
       return res.status(400).json({
@@ -297,9 +336,9 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       });
     }
 
-    // --------------------------------------------------------
+    // ----------------------------------------------------------
     // Update MongoDB
-    // --------------------------------------------------------
+    // ----------------------------------------------------------
 
     const result = await users.updateOne(
       { uid },
@@ -315,9 +354,9 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       });
     }
 
-    // --------------------------------------------------------
+    // ----------------------------------------------------------
     // Get updated user
-    // --------------------------------------------------------
+    // ----------------------------------------------------------
 
     const updatedUser = await users.findOne({
       uid,
@@ -338,18 +377,19 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
   }
 });
 
-/**
- * ============================================================
- * POST /api/auth/logout
- * ============================================================
- * Update user's last activity timestamp.
- *
- * Firebase sign-out happens on the client.
- * This endpoint does not invalidate Firebase tokens.
- */
+// ============================================================
+// POST /api/auth/logout
+// ============================================================
+// Firebase sign-out happens on the client.
+//
+// This endpoint only updates the user's activity timestamp.
+// It does NOT invalidate Firebase tokens.
+// ============================================================
+
 router.post("/logout", verifyToken, async (req, res) => {
   try {
     const { users } = getCollections();
+
     const uid = req.user?.uid;
 
     if (!uid) {

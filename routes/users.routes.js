@@ -1,10 +1,10 @@
 import express from "express";
-
 import { ObjectId } from "mongodb";
 
 import verifyToken from "../middleware/verifyToken.js";
 import verifyUser from "../middleware/verifyUser.js";
 import verifyAdmin from "../middleware/verifyAdmin.js";
+
 import { getCollections } from "../config/db.js";
 
 const router = express.Router();
@@ -37,6 +37,14 @@ function escapeRegex(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function isValidObjectId(id) {
+  return typeof id === "string" && ObjectId.isValid(id);
+}
+
+function isValidBangladeshiPhone(phone) {
+  return /^01[3-9]\d{8}$/.test(phone);
+}
+
 function parsePagination(page, limit) {
   const parsedPage = Number.parseInt(page, 10);
   const parsedLimit = Number.parseInt(limit, 10);
@@ -54,18 +62,6 @@ function parsePagination(page, limit) {
     limit: safeLimit,
     skip: (safePage - 1) * safeLimit,
   };
-}
-
-function isValidObjectId(id) {
-  return typeof id === "string" && ObjectId.isValid(id);
-}
-
-// ============================================================
-// PHONE VALIDATION
-// ============================================================
-
-function isValidBangladeshiPhone(phone) {
-  return /^01[3-9]\d{8}$/.test(phone);
 }
 
 // ============================================================
@@ -90,22 +86,71 @@ const USER_PROJECTION = {
 };
 
 // ============================================================
+// USER RESPONSE SANITIZER
+// ============================================================
+// Important:
+// If photo is null / empty, the "photo" field is removed
+// completely from API response.
+//
+// Example:
+//
+// photo: null
+//
+// becomes:
+//
+// no photo field
+// ============================================================
+
+function sanitizeUser(user) {
+  if (!user || typeof user !== "object") {
+    return user;
+  }
+
+  const sanitizedUser = {
+    ...user,
+  };
+
+  const cleanPhoto = cleanString(sanitizedUser.photo);
+
+  if (cleanPhoto) {
+    sanitizedUser.photo = cleanPhoto;
+  } else {
+    delete sanitizedUser.photo;
+  }
+
+  return sanitizedUser;
+}
+
+function sanitizeUsers(users) {
+  if (!Array.isArray(users)) {
+    return [];
+  }
+
+  return users.map(sanitizeUser);
+}
+
+// ============================================================
 // POST /api/users
 // CREATE / SYNC CURRENT FIREBASE USER
 // ============================================================
 //
-// Firebase = authentication
-// MongoDB "users" = application user data
+// Firebase
+//    ↓
+// Authentication
+//
+// MongoDB "users"
+//    ↓
+// Application user data
 //
 // Client cannot control:
-// - role
-// - status
 // - uid
 // - email
+// - role
+// - status
 //
-// Server gets identity from Firebase token.
-//
+// Identity always comes from Firebase token.
 // ============================================================
+
 router.post("/", verifyToken, async (req, res) => {
   try {
     const { users } = getCollections();
@@ -159,7 +204,7 @@ router.post("/", verifyToken, async (req, res) => {
       });
     }
 
-    if (!/^01[3-9]\d{8}$/.test(cleanPhone)) {
+    if (!isValidBangladeshiPhone(cleanPhone)) {
       return res.status(400).json({
         success: false,
         message: "Enter a valid Bangladeshi phone number.",
@@ -183,8 +228,8 @@ router.post("/", verifyToken, async (req, res) => {
 
     if (
       profile !== undefined &&
-      (typeof profile !== "object" ||
-        profile === null ||
+      (profile === null ||
+        typeof profile !== "object" ||
         Array.isArray(profile))
     ) {
       return res.status(400).json({
@@ -197,7 +242,7 @@ router.post("/", verifyToken, async (req, res) => {
     // Provider
     // --------------------------------------------------------
 
-    const firebaseProvider = firebaseUser.provider;
+    const firebaseProvider = cleanString(firebaseUser.provider);
 
     const provider =
       firebaseProvider === "google.com"
@@ -217,49 +262,93 @@ router.post("/", verifyToken, async (req, res) => {
     // ========================================================
 
     if (existingUser) {
+      const now = new Date();
+
       const updateData = {
         email: firebaseEmail || existingUser.email || "",
 
         name:
           cleanName ||
           existingUser.name ||
-          firebaseUser.name ||
+          cleanString(firebaseUser.name) ||
           "School Member",
 
-        /*
-         * IMPORTANT:
-         * Always use the submitted phone when available.
-         */
+        // Actual submitted phone number
         phone: cleanPhone,
-
-        photo: cleanPhoto || existingUser.photo || firebaseUser.picture || "",
 
         provider: existingUser.provider || provider,
 
-        emailVerified:
-          firebaseUser.emailVerified ?? existingUser.emailVerified ?? false,
+        emailVerified: firebaseUser.emailVerified === true,
 
-        lastLogin: new Date(),
+        lastLogin: now,
 
-        updatedAt: new Date(),
+        updatedAt: now,
       };
 
       // ------------------------------------------------------
-      // Update profile only when supplied
+      // Photo
+      // ------------------------------------------------------
+
+      if (cleanPhoto) {
+        updateData.photo = cleanPhoto;
+      } else if (existingUser.photo && cleanString(existingUser.photo)) {
+        updateData.photo = cleanString(existingUser.photo);
+      } else if (firebaseUser.picture && cleanString(firebaseUser.picture)) {
+        updateData.photo = cleanString(firebaseUser.picture);
+      } else {
+        // Do not store null/empty photo unnecessarily.
+        // If an old empty value exists, remove it.
+        updateData.$unset = {
+          photo: "",
+        };
+      }
+
+      // ------------------------------------------------------
+      // Profile
       // ------------------------------------------------------
 
       if (profile && typeof profile === "object" && !Array.isArray(profile)) {
         updateData.profile = profile;
       }
 
+      // ------------------------------------------------------
+      // MongoDB update
+      // ------------------------------------------------------
+
+      const updateOperation = {
+        $set: {
+          email: updateData.email,
+          name: updateData.name,
+          phone: updateData.phone,
+          provider: updateData.provider,
+          emailVerified: updateData.emailVerified,
+          lastLogin: updateData.lastLogin,
+          updatedAt: updateData.updatedAt,
+        },
+      };
+
+      // Photo
+      if (updateData.photo) {
+        updateOperation.$set.photo = updateData.photo;
+      } else if (updateData.$unset) {
+        updateOperation.$unset = updateData.$unset;
+      }
+
+      // Profile
+      if (updateData.profile) {
+        updateOperation.$set.profile = updateData.profile;
+      }
+
       await users.updateOne(
         {
           uid,
         },
-        {
-          $set: updateData,
-        },
+        updateOperation,
       );
+
+      // ------------------------------------------------------
+      // Get updated user
+      // ------------------------------------------------------
 
       const updatedUser = await users.findOne(
         {
@@ -273,7 +362,7 @@ router.post("/", verifyToken, async (req, res) => {
       return res.status(200).json({
         success: true,
         message: "User synchronized successfully.",
-        user: updatedUser,
+        user: sanitizeUser(updatedUser),
       });
     }
 
@@ -288,22 +377,15 @@ router.post("/", verifyToken, async (req, res) => {
 
       email: firebaseEmail || null,
 
-      name: cleanName || firebaseUser.name || "School Member",
+      name: cleanName || cleanString(firebaseUser.name) || "School Member",
 
-      /*
-       * IMPORTANT:
-       * Actual phone number is stored here.
-       */
+      // Actual phone number
       phone: cleanPhone,
-
-      photo: cleanPhoto || firebaseUser.picture || null,
 
       provider,
 
-      // Server controlled
       role: "student",
 
-      // Server controlled
       status: "active",
 
       emailVerified: firebaseUser.emailVerified === true,
@@ -319,6 +401,16 @@ router.post("/", verifyToken, async (req, res) => {
 
       lastLogin: now,
     };
+
+    // --------------------------------------------------------
+    // Add photo only if available
+    // --------------------------------------------------------
+
+    if (cleanPhoto) {
+      newUser.photo = cleanPhoto;
+    } else if (firebaseUser.picture && cleanString(firebaseUser.picture)) {
+      newUser.photo = cleanString(firebaseUser.picture);
+    }
 
     // --------------------------------------------------------
     // Insert user
@@ -338,12 +430,15 @@ router.post("/", verifyToken, async (req, res) => {
     return res.status(201).json({
       success: true,
       message: "User created successfully.",
-      user: createdUser,
+      user: sanitizeUser(createdUser),
     });
   } catch (error) {
     console.error("POST /api/users error:", error);
 
-    // MongoDB duplicate key
+    // --------------------------------------------------------
+    // Duplicate key
+    // --------------------------------------------------------
+
     if (error?.code === 11000) {
       return res.status(409).json({
         success: false,
@@ -360,7 +455,7 @@ router.post("/", verifyToken, async (req, res) => {
 
 // ============================================================
 // GET /api/users
-// ADMIN: GET ALL USERS
+// ADMIN: GET USERS
 // ============================================================
 
 router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
@@ -480,7 +575,7 @@ router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
     return res.status(200).json({
       success: true,
 
-      users: userList,
+      users: sanitizeUsers(userList),
 
       pagination: {
         total: totalUsers,
@@ -494,7 +589,7 @@ router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("GET /users error:", error);
+    console.error("GET /api/users error:", error);
 
     return res.status(500).json({
       success: false,
@@ -505,15 +600,7 @@ router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
 
 // ============================================================
 // GET /api/users/:email
-// GET SINGLE USER BY EMAIL
-// ============================================================
-//
-// Normal user:
-//   Can only access own user.
-//
-// Admin:
-//   Can access any user.
-//
+// GET CURRENT USER / ADMIN USER
 // ============================================================
 
 router.get("/:email", verifyToken, verifyUser, async (req, res) => {
@@ -566,10 +653,10 @@ router.get("/:email", verifyToken, verifyUser, async (req, res) => {
 
     return res.status(200).json({
       success: true,
-      user,
+      user: sanitizeUser(user),
     });
   } catch (error) {
-    console.error("GET /users/:email error:", error);
+    console.error("GET /api/users/:email error:", error);
 
     return res.status(500).json({
       success: false,
@@ -647,14 +734,14 @@ router.patch(
       }
 
       // ------------------------------------------------------
-      // Prevent unnecessary update
+      // No unnecessary update
       // ------------------------------------------------------
 
       if (targetUser.role === role) {
         return res.status(200).json({
           success: true,
           message: "User already has this role.",
-          user: targetUser,
+          user: sanitizeUser(targetUser),
         });
       }
 
@@ -690,10 +777,10 @@ router.patch(
       return res.status(200).json({
         success: true,
         message: "User role updated successfully.",
-        user: updatedUser,
+        user: sanitizeUser(updatedUser),
       });
     } catch (error) {
-      console.error("PATCH /users/:id/role error:", error);
+      console.error("PATCH /api/users/:id/role error:", error);
 
       return res.status(500).json({
         success: false,
@@ -774,14 +861,14 @@ router.patch(
       }
 
       // ------------------------------------------------------
-      // Prevent unnecessary update
+      // No unnecessary update
       // ------------------------------------------------------
 
       if (targetUser.status === status) {
         return res.status(200).json({
           success: true,
           message: "User already has this account status.",
-          user: targetUser,
+          user: sanitizeUser(targetUser),
         });
       }
 
@@ -817,10 +904,10 @@ router.patch(
       return res.status(200).json({
         success: true,
         message: "User status updated successfully.",
-        user: updatedUser,
+        user: sanitizeUser(updatedUser),
       });
     } catch (error) {
-      console.error("PATCH /users/:id/status error:", error);
+      console.error("PATCH /api/users/:id/status error:", error);
 
       return res.status(500).json({
         success: false,
@@ -832,13 +919,7 @@ router.patch(
 
 // ============================================================
 // DELETE /api/users/:id
-// ADMIN: DELETE USER FROM MONGODB
-// ============================================================
-//
-// IMPORTANT:
-// This deletes the MongoDB user document only.
-// It does NOT delete the Firebase Authentication account.
-//
+// ADMIN: DELETE USER
 // ============================================================
 
 router.delete(
@@ -911,7 +992,7 @@ router.delete(
         message: "User deleted successfully.",
       });
     } catch (error) {
-      console.error("DELETE /users/:id error:", error);
+      console.error("DELETE /api/users/:id error:", error);
 
       return res.status(500).json({
         success: false,
@@ -920,5 +1001,9 @@ router.delete(
     }
   },
 );
+
+// ============================================================
+// EXPORT ROUTER
+// ============================================================
 
 export default router;
