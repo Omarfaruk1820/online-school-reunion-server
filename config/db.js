@@ -36,6 +36,12 @@ let alumniProfiles = null;
 let reunionEvents = null;
 let reunionRegistrations = null;
 let giftPackages = null;
+let announcements = null;
+let attendance = null;
+let batches = null;
+let contactMessages = null;
+let sponsors = null;
+let schedules = null;
 
 let connectionPromise = null;
 
@@ -69,6 +75,12 @@ async function connectDB() {
       reunionRegistrations = db.collection("reunionRegistrations");
 
       giftPackages = db.collection("giftPackages");
+      announcements = db.collection("announcements");
+      attendance = db.collection("attendance");
+      batches = db.collection("batches");
+      contactMessages = db.collection("contactMessages");
+      sponsors = db.collection("sponsors");
+      schedules = db.collection("schedules");
 
       await users.createIndex(
         { uid: 1 },
@@ -122,6 +134,14 @@ function getCollections() {
     reunionEvents,
     reunionRegistrations,
     giftPackages,
+    announcements,
+    attendance,
+    batches,
+    contactMessages,
+    departments,
+    gallery,
+    sponsors,
+    schedules,
   };
 }
 
