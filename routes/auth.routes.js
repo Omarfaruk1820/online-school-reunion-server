@@ -7,10 +7,6 @@ import { getCollections } from "../config/db.js";
 
 const router = express.Router();
 
-// ============================================================
-// HELPERS
-// ============================================================
-
 const normalizeName = (value) => {
   return typeof value === "string" ? value.trim() : "";
 };
@@ -30,15 +26,6 @@ const normalizeEmail = (value) => {
 const isValidBangladeshiPhone = (phone) => {
   return /^01[3-9]\d{8}$/.test(phone);
 };
-
-// ============================================================
-// POST /api/auth/register
-// ============================================================
-// Compatibility endpoint.
-//
-// Main Firebase → MongoDB synchronization is handled through
-// POST /api/users in the current frontend flow.
-// ============================================================
 
 router.post("/register", verifyToken, async (req, res) => {
   try {
@@ -177,38 +164,12 @@ router.post("/register", verifyToken, async (req, res) => {
   }
 });
 
-// ============================================================
-// GET /api/auth/me
-// ============================================================
-// Get currently authenticated MongoDB user.
-// ============================================================
-
 router.get("/me", verifyToken, verifyUser, (req, res) => {
   return res.status(200).json({
     success: true,
     user: req.userData,
   });
 });
-
-// ============================================================
-// PATCH /api/auth/me
-// ============================================================
-// Update authenticated user's profile.
-//
-// Editable:
-// - name
-// - phone
-// - photo
-// - profile
-//
-// Protected:
-// - uid
-// - email
-// - role
-// - status
-// - createdAt
-// - emailVerified
-// ============================================================
 
 router.patch("/me", verifyToken, verifyUser, async (req, res) => {
   try {
@@ -376,15 +337,6 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
     });
   }
 });
-
-// ============================================================
-// POST /api/auth/logout
-// ============================================================
-// Firebase sign-out happens on the client.
-//
-// This endpoint only updates the user's activity timestamp.
-// It does NOT invalidate Firebase tokens.
-// ============================================================
 
 router.post("/logout", verifyToken, async (req, res) => {
   try {

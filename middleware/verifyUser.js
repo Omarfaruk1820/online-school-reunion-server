@@ -3,29 +3,50 @@ import { getCollections } from "../config/db.js";
 const verifyUser = async (req, res, next) => {
   try {
     // ========================================================
-    // CHECK AUTHENTICATED USER
+    // 1. CHECK AUTHENTICATED USER
     // ========================================================
 
-    if (!req.user?.uid) {
+    const uid = req.user?.uid;
+
+    if (!uid) {
       return res.status(401).json({
         success: false,
+        code: "auth/user-missing",
         message: "Authentication required.",
       });
     }
 
-    // ========================================================
-    // GET USERS COLLECTION
-    // ========================================================
-
-    const { users } = getCollections();
+    console.log("VERIFY USER - Firebase UID:", uid);
 
     // ========================================================
-    // FIND USER
+    // 2. GET COLLECTIONS
+    // ========================================================
+
+    const collections = getCollections();
+
+    if (!collections) {
+      throw new Error("getCollections() returned undefined.");
+    }
+
+    const { users } = collections;
+
+    // ========================================================
+    // 3. CHECK USERS COLLECTION
+    // ========================================================
+
+    if (!users) {
+      throw new Error("Users collection is not initialized.");
+    }
+
+    console.log("VERIFY USER - Users collection is available.");
+
+    // ========================================================
+    // 4. FIND USER
     // ========================================================
 
     const user = await users.findOne(
       {
-        uid: req.user.uid,
+        uid,
       },
       {
         projection: {
@@ -47,43 +68,62 @@ const verifyUser = async (req, res, next) => {
       },
     );
 
+    console.log("VERIFY USER - MongoDB user found:", Boolean(user));
+
     // ========================================================
-    // USER NOT FOUND
+    // 5. USER NOT FOUND
     // ========================================================
 
     if (!user) {
       return res.status(404).json({
         success: false,
+        code: "user/not-found",
         message: "User account not found.",
       });
     }
 
     // ========================================================
-    // CHECK USER STATUS
+    // 6. CHECK USER STATUS
     // ========================================================
 
     if (user.status !== "active") {
       return res.status(403).json({
         success: false,
+        code: "user/inactive",
         message: "Your account is not active.",
       });
     }
 
     // ========================================================
-    // ATTACH DATABASE USER
+    // 7. ATTACH DATABASE USER
     // ========================================================
 
     req.userData = user;
 
+    console.log("VERIFY USER - User verification successful:", {
+      uid: user.uid,
+      email: user.email,
+      role: user.role,
+      status: user.status,
+    });
+
     return next();
   } catch (error) {
-    console.error("User verification error:", {
+    // ========================================================
+    // REAL ERROR
+    // ========================================================
+
+    console.error("USER VERIFICATION ERROR:", {
+      name: error?.name || "UnknownError",
       message: error?.message || "Unknown error",
       code: error?.code || "UNKNOWN",
+      stack: error?.stack || "No stack available",
+      uid: req.user?.uid || "UID_MISSING",
     });
 
     return res.status(500).json({
       success: false,
+      code: "user/verification-failed",
       message: "Failed to verify user account.",
     });
   }
