@@ -7,15 +7,78 @@ import { getCollections } from "../config/db.js";
 
 const router = express.Router();
 
-const normalizeName = (value) => {
-  return typeof value === "string" ? value.trim() : "";
+// ============================================================
+// CONSTANTS
+// ============================================================
+
+const MAX_NAME_LENGTH = 100;
+const MAX_PHONE_LENGTH = 11;
+const MAX_PHOTO_URL_LENGTH = 2000;
+
+const MAX_BATCH_LENGTH = 50;
+const MAX_CLASS_LENGTH = 50;
+const MAX_DEPARTMENT_LENGTH = 50;
+const MAX_PROFESSION_LENGTH = 100;
+const MAX_ORGANIZATION_LENGTH = 150;
+const MAX_ADDRESS_LENGTH = 300;
+const MAX_BIO_LENGTH = 1000;
+
+const PHONE_REGEX = /^01[3-9]\d{8}$/;
+
+const ALLOWED_DEPARTMENTS = [
+  "science",
+  "commerce",
+  "humanities",
+  "vocational",
+  "none",
+];
+
+const ALLOWED_PROFILE_FIELDS = [
+  "batch",
+  "className",
+  "department",
+  "profession",
+  "organization",
+  "address",
+  "bio",
+];
+
+const PROFILE_FIELD_MAX_LENGTHS = {
+  batch: MAX_BATCH_LENGTH,
+  className: MAX_CLASS_LENGTH,
+  department: MAX_DEPARTMENT_LENGTH,
+  profession: MAX_PROFESSION_LENGTH,
+  organization: MAX_ORGANIZATION_LENGTH,
+  address: MAX_ADDRESS_LENGTH,
+  bio: MAX_BIO_LENGTH,
 };
 
-const normalizePhone = (value) => {
-  return typeof value === "string" ? value.trim() : "";
+// ============================================================
+// USER PROJECTION
+// ============================================================
+
+const USER_PROJECTION = {
+  _id: 1,
+  uid: 1,
+  name: 1,
+  email: 1,
+  phone: 1,
+  photo: 1,
+  provider: 1,
+  role: 1,
+  status: 1,
+  emailVerified: 1,
+  profile: 1,
+  createdAt: 1,
+  updatedAt: 1,
+  lastLogin: 1,
 };
 
-const normalizePhoto = (value) => {
+// ============================================================
+// HELPERS
+// ============================================================
+
+const normalizeString = (value) => {
   return typeof value === "string" ? value.trim() : "";
 };
 
@@ -24,14 +87,174 @@ const normalizeEmail = (value) => {
 };
 
 const isValidBangladeshiPhone = (phone) => {
-  return /^01[3-9]\d{8}$/.test(phone);
+  return PHONE_REGEX.test(phone);
 };
+
+const isValidHttpUrl = (value) => {
+  if (!value) {
+    return true;
+  }
+
+  try {
+    const url = new URL(value);
+
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+};
+
+const createDefaultProfile = () => {
+  return {
+    batch: "",
+    className: "",
+    department: "",
+    profession: "",
+    organization: "",
+    address: "",
+    bio: "",
+  };
+};
+
+// ============================================================
+// GET SAFE USER
+// ============================================================
+
+const getSafeUser = async (users, uid) => {
+  return users.findOne(
+    { uid },
+    {
+      projection: USER_PROJECTION,
+    },
+  );
+};
+
+// ============================================================
+// VALIDATE PROFILE FIELD
+// ============================================================
+
+const validateProfileField = (field, value) => {
+  if (typeof value !== "string") {
+    return `${field} must be a string.`;
+  }
+
+  const cleanValue = value.trim();
+
+  const maxLength = PROFILE_FIELD_MAX_LENGTHS[field];
+
+  if (maxLength && cleanValue.length > maxLength) {
+    return `${field} must be ${maxLength} characters or less.`;
+  }
+
+  if (
+    field === "department" &&
+    cleanValue &&
+    !ALLOWED_DEPARTMENTS.includes(cleanValue)
+  ) {
+    return "Invalid department selected.";
+  }
+
+  return null;
+};
+
+// ============================================================
+// BUILD PROFILE UPDATE
+// ============================================================
+//
+// Important:
+// We use:
+// profile.batch
+// profile.className
+// profile.department
+//
+// instead of:
+// profile = {...}
+//
+// This prevents replacing the entire profile object.
+// ============================================================
+
+const buildProfileUpdate = (profile) => {
+  const updateData = {};
+
+  if (profile === undefined) {
+    return {
+      updateData,
+      error: null,
+    };
+  }
+
+  if (
+    profile === null ||
+    typeof profile !== "object" ||
+    Array.isArray(profile)
+  ) {
+    return {
+      updateData: {},
+      error: "Profile must be a valid object.",
+    };
+  }
+
+  for (const field of ALLOWED_PROFILE_FIELDS) {
+    if (profile[field] === undefined) {
+      continue;
+    }
+
+    const validationError = validateProfileField(field, profile[field]);
+
+    if (validationError) {
+      return {
+        updateData: {},
+        error: validationError,
+      };
+    }
+
+    const cleanValue = profile[field].trim();
+
+    updateData[`profile.${field}`] = cleanValue;
+  }
+
+  return {
+    updateData,
+    error: null,
+  };
+};
+
+// ============================================================
+// POST /api/auth/register
+// ============================================================
+//
+// Creates MongoDB user after Firebase authentication.
+//
+// Firebase authentication:
+// Client
+//    ↓
+// Firebase
+//    ↓
+// ID Token
+//    ↓
+// verifyToken
+//    ↓
+// MongoDB users collection
+// ============================================================
 
 router.post("/register", verifyToken, async (req, res) => {
   try {
     const { users } = getCollections();
 
+    if (!users) {
+      console.error("Users collection is not initialized.");
+
+      return res.status(500).json({
+        success: false,
+        message: "Database is not ready.",
+      });
+    }
+
     const firebaseUser = req.user;
+
+    // --------------------------------------------------------
+    // Firebase identity
+    // --------------------------------------------------------
 
     if (!firebaseUser?.uid) {
       return res.status(401).json({
@@ -40,92 +263,175 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    const cleanName = normalizeName(req.body?.name);
-    const cleanPhone = normalizePhone(req.body?.phone);
+    const uid = firebaseUser.uid;
 
-    // ----------------------------------------------------------
+    const email = normalizeEmail(firebaseUser.email);
+
+    const name = normalizeString(req.body?.name);
+
+    const phone = normalizeString(req.body?.phone);
+
+    // --------------------------------------------------------
+    // Validate email
+    // --------------------------------------------------------
+
+    if (!email) {
+      return res.status(400).json({
+        success: false,
+        message: "A valid Firebase email is required.",
+      });
+    }
+
+    // --------------------------------------------------------
     // Validate name
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
 
-    if (!cleanName) {
+    if (!name) {
       return res.status(400).json({
         success: false,
         message: "Name is required.",
       });
     }
 
-    if (cleanName.length > 100) {
+    if (name.length > MAX_NAME_LENGTH) {
       return res.status(400).json({
         success: false,
         message: "Name must be 100 characters or less.",
       });
     }
 
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
     // Validate phone
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
 
-    if (!cleanPhone) {
+    if (!phone) {
       return res.status(400).json({
         success: false,
         message: "Phone number is required.",
       });
     }
 
-    if (!isValidBangladeshiPhone(cleanPhone)) {
+    if (phone.length !== MAX_PHONE_LENGTH) {
+      return res.status(400).json({
+        success: false,
+        message: "Phone number must contain 11 digits.",
+      });
+    }
+
+    if (!isValidBangladeshiPhone(phone)) {
       return res.status(400).json({
         success: false,
         message: "Enter a valid Bangladeshi phone number.",
       });
     }
 
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
     // Check existing user
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
 
     const existingUser = await users.findOne({
-      uid: firebaseUser.uid,
+      uid,
     });
 
     if (existingUser) {
+      const now = new Date();
+
+      // Update login-related information.
+      //
+      // We intentionally DO NOT overwrite:
+      // - role
+      // - status
+      // - profile
+      // - phone
+      // - manually edited photo
+      // - manually edited name
+      //
+      // This protects existing user data.
+      await users.updateOne(
+        { uid },
+        {
+          $set: {
+            lastLogin: now,
+            updatedAt: now,
+            emailVerified: firebaseUser.emailVerified === true,
+          },
+        },
+      );
+
+      const currentUser = await getSafeUser(users, uid);
+
       return res.status(200).json({
         success: true,
         message: "User already exists.",
-        user: existingUser,
+        user: currentUser,
       });
     }
 
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
+    // Firebase profile photo
+    // --------------------------------------------------------
+
+    let firebasePhoto = null;
+
+    if (typeof firebaseUser.picture === "string") {
+      const cleanPicture = firebaseUser.picture.trim();
+
+      if (
+        cleanPicture &&
+        cleanPicture.length <= MAX_PHOTO_URL_LENGTH &&
+        isValidHttpUrl(cleanPicture)
+      ) {
+        firebasePhoto = cleanPicture;
+      }
+    }
+
+    // --------------------------------------------------------
+    // Provider
+    // --------------------------------------------------------
+
+    const provider =
+      typeof firebaseUser.provider === "string" && firebaseUser.provider.trim()
+        ? firebaseUser.provider.trim()
+        : "password";
+
+    // --------------------------------------------------------
     // Create user
-    // ----------------------------------------------------------
+    // --------------------------------------------------------
 
     const now = new Date();
 
     const newUser = {
-      uid: firebaseUser.uid,
+      uid,
 
-      email: normalizeEmail(firebaseUser.email),
+      email,
 
-      name: cleanName,
+      name,
 
-      phone: cleanPhone,
+      phone,
 
-      photo:
-        typeof firebaseUser.picture === "string"
-          ? firebaseUser.picture.trim()
-          : null,
+      photo: firebasePhoto,
 
-      provider: "password",
+      provider,
 
-      // Server controlled
+      // ------------------------------------------------------
+      // Server-controlled fields
+      // ------------------------------------------------------
+
       role: "student",
 
-      // Server controlled
       status: "active",
 
-      profile: {},
-
       emailVerified: firebaseUser.emailVerified === true,
+
+      // ------------------------------------------------------
+      // Profile
+      // ------------------------------------------------------
+
+      profile: createDefaultProfile(),
+
+      // ------------------------------------------------------
+      // Timestamps
+      // ------------------------------------------------------
 
       createdAt: now,
 
@@ -136,10 +442,28 @@ router.post("/register", verifyToken, async (req, res) => {
 
     const result = await users.insertOne(newUser);
 
-    const createdUser = {
-      _id: result.insertedId,
-      ...newUser,
-    };
+    if (!result.insertedId) {
+      return res.status(500).json({
+        success: false,
+        message: "Failed to create user account.",
+      });
+    }
+
+    const createdUser = await users.findOne(
+      {
+        _id: result.insertedId,
+      },
+      {
+        projection: USER_PROJECTION,
+      },
+    );
+
+    if (!createdUser) {
+      return res.status(500).json({
+        success: false,
+        message: "User was created but could not be retrieved.",
+      });
+    }
 
     return res.status(201).json({
       success: true,
@@ -164,6 +488,13 @@ router.post("/register", verifyToken, async (req, res) => {
   }
 });
 
+// ============================================================
+// GET /api/auth/me
+// ============================================================
+//
+// Returns currently authenticated MongoDB user.
+// ============================================================
+
 router.get("/me", verifyToken, verifyUser, (req, res) => {
   return res.status(200).json({
     success: true,
@@ -171,11 +502,48 @@ router.get("/me", verifyToken, verifyUser, (req, res) => {
   });
 });
 
+// ============================================================
+// PATCH /api/auth/me
+// UPDATE CURRENT USER PROFILE
+// ============================================================
+//
+// User can update ONLY their own:
+//
+// name
+// phone
+// photo
+// profile.*
+//
+// User CANNOT update:
+//
+// uid
+// email
+// role
+// status
+// provider
+// emailVerified
+// createdAt
+// lastLogin
+// ============================================================
+
 router.patch("/me", verifyToken, verifyUser, async (req, res) => {
   try {
     const { users } = getCollections();
 
+    if (!users) {
+      console.error("Users collection is not initialized.");
+
+      return res.status(500).json({
+        success: false,
+        message: "Database is not ready.",
+      });
+    }
+
     const uid = req.user?.uid;
+
+    // --------------------------------------------------------
+    // Authentication
+    // --------------------------------------------------------
 
     if (!uid) {
       return res.status(401).json({
@@ -186,13 +554,17 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
 
     const { name, phone, photo, profile } = req.body || {};
 
+    // --------------------------------------------------------
+    // Base update
+    // --------------------------------------------------------
+
     const updateData = {
       updatedAt: new Date(),
     };
 
-    // ----------------------------------------------------------
-    // Name
-    // ----------------------------------------------------------
+    // ========================================================
+    // NAME
+    // ========================================================
 
     if (name !== undefined) {
       if (typeof name !== "string") {
@@ -211,7 +583,7 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
         });
       }
 
-      if (cleanName.length > 100) {
+      if (cleanName.length > MAX_NAME_LENGTH) {
         return res.status(400).json({
           success: false,
           message: "Name must be 100 characters or less.",
@@ -221,9 +593,9 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       updateData.name = cleanName;
     }
 
-    // ----------------------------------------------------------
-    // Phone
-    // ----------------------------------------------------------
+    // ========================================================
+    // PHONE
+    // ========================================================
 
     if (phone !== undefined) {
       if (typeof phone !== "string") {
@@ -242,6 +614,13 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
         });
       }
 
+      if (cleanPhone.length !== MAX_PHONE_LENGTH) {
+        return res.status(400).json({
+          success: false,
+          message: "Phone number must contain 11 digits.",
+        });
+      }
+
       if (!isValidBangladeshiPhone(cleanPhone)) {
         return res.status(400).json({
           success: false,
@@ -252,9 +631,9 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       updateData.phone = cleanPhone;
     }
 
-    // ----------------------------------------------------------
-    // Photo
-    // ----------------------------------------------------------
+    // ========================================================
+    // PHOTO
+    // ========================================================
 
     if (photo !== undefined) {
       if (typeof photo !== "string") {
@@ -264,31 +643,51 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
         });
       }
 
-      updateData.photo = photo.trim() || null;
-    }
+      const cleanPhoto = photo.trim();
 
-    // ----------------------------------------------------------
-    // Profile
-    // ----------------------------------------------------------
-
-    if (profile !== undefined) {
-      if (
-        profile === null ||
-        typeof profile !== "object" ||
-        Array.isArray(profile)
-      ) {
+      if (cleanPhoto.length > MAX_PHOTO_URL_LENGTH) {
         return res.status(400).json({
           success: false,
-          message: "Profile must be a valid object.",
+          message: "Photo URL is too long.",
         });
       }
 
-      updateData.profile = profile;
+      if (cleanPhoto && !isValidHttpUrl(cleanPhoto)) {
+        return res.status(400).json({
+          success: false,
+          message: "Please provide a valid photo URL.",
+        });
+      }
+
+      // Empty photo URL means remove photo.
+      updateData.photo = cleanPhoto || null;
     }
 
-    // ----------------------------------------------------------
-    // Check whether there is anything to update
-    // ----------------------------------------------------------
+    // ========================================================
+    // PROFILE
+    // ========================================================
+
+    const { updateData: profileUpdate, error: profileError } =
+      buildProfileUpdate(profile);
+
+    if (profileError) {
+      return res.status(400).json({
+        success: false,
+        message: profileError,
+      });
+    }
+
+    Object.assign(updateData, profileUpdate);
+
+    // ========================================================
+    // CHECK FOR ACTUAL USER DATA
+    // ========================================================
+    //
+    // updatedAt is always present.
+    //
+    // Therefore if only updatedAt exists,
+    // there is no actual profile change.
+    // ========================================================
 
     if (Object.keys(updateData).length === 1) {
       return res.status(400).json({
@@ -297,9 +696,9 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       });
     }
 
-    // ----------------------------------------------------------
-    // Update MongoDB
-    // ----------------------------------------------------------
+    // ========================================================
+    // UPDATE MONGODB
+    // ========================================================
 
     const result = await users.updateOne(
       { uid },
@@ -308,20 +707,33 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       },
     );
 
+    // --------------------------------------------------------
+    // User not found
+    // --------------------------------------------------------
+
     if (result.matchedCount === 0) {
       return res.status(404).json({
         success: false,
-        message: "User not found.",
+        message: "User account not found.",
       });
     }
 
-    // ----------------------------------------------------------
-    // Get updated user
-    // ----------------------------------------------------------
+    // ========================================================
+    // GET UPDATED USER
+    // ========================================================
 
-    const updatedUser = await users.findOne({
-      uid,
-    });
+    const updatedUser = await getSafeUser(users, uid);
+
+    if (!updatedUser) {
+      return res.status(404).json({
+        success: false,
+        message: "Updated user could not be found.",
+      });
+    }
+
+    // ========================================================
+    // RESPONSE
+    // ========================================================
 
     return res.status(200).json({
       success: true,
@@ -331,6 +743,14 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
   } catch (error) {
     console.error("PATCH /api/auth/me error:", error);
 
+    // MongoDB duplicate key
+    if (error?.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "The provided information already exists.",
+      });
+    }
+
     return res.status(500).json({
       success: false,
       message: "Failed to update profile.",
@@ -338,9 +758,27 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
   }
 });
 
+// ============================================================
+// POST /api/auth/logout
+// ============================================================
+//
+// Firebase logout actually happens on frontend:
+//
+// signOut(auth)
+//
+// This endpoint only records the user's latest activity.
+// ============================================================
+
 router.post("/logout", verifyToken, async (req, res) => {
   try {
     const { users } = getCollections();
+
+    if (!users) {
+      return res.status(500).json({
+        success: false,
+        message: "Database is not ready.",
+      });
+    }
 
     const uid = req.user?.uid;
 
@@ -380,5 +818,9 @@ router.post("/logout", verifyToken, async (req, res) => {
     });
   }
 });
+
+// ============================================================
+// EXPORT ROUTER
+// ============================================================
 
 export default router;

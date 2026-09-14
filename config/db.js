@@ -163,6 +163,40 @@ async function connectDB() {
       );
 
       // --------------------------------------------------------
+      // Reunion Registration Indexes
+      // --------------------------------------------------------
+
+      await reunionRegistrations.createIndex(
+        { eventId: 1, uid: 1 },
+        {
+          unique: true,
+          name: "unique_reunion_registration",
+        },
+      );
+
+      await reunionRegistrations.createIndex(
+        { registrationId: 1 },
+        {
+          unique: true,
+          name: "unique_registration_id",
+        },
+      );
+
+      await reunionRegistrations.createIndex(
+        { uid: 1, createdAt: -1 },
+        {
+          name: "user_registration_history",
+        },
+      );
+
+      await reunionRegistrations.createIndex(
+        { eventId: 1, status: 1 },
+        {
+          name: "event_registration_status",
+        },
+      );
+
+      // --------------------------------------------------------
       // Success Logs
       // --------------------------------------------------------
 
