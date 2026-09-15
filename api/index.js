@@ -8,6 +8,7 @@ import { connectDB } from "../config/db.js";
 
 import authRoutes from "../routes/auth.routes.js";
 import usersRoutes from "../routes/users.routes.js";
+import registerRoutes from "../routes/register.routes.js";
 
 const app = express();
 
@@ -50,20 +51,9 @@ app.use(
 
     credentials: true,
 
-    methods: [
-      "GET",
-      "POST",
-      "PUT",
-      "PATCH",
-      "DELETE",
-      "OPTIONS",
-    ],
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
 
-    allowedHeaders: [
-      "Content-Type",
-      "Authorization",
-      "X-Requested-With",
-    ],
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
 
     optionsSuccessStatus: 204,
   }),
@@ -156,6 +146,7 @@ app.use("/api/auth", authRoutes);
 
 app.use("/api/users", usersRoutes);
 
+app.use("/api/reunion", registerRoutes);
 // ============================================================
 // 404
 // ============================================================

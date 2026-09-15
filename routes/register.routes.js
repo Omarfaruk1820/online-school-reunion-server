@@ -75,7 +75,7 @@ const serializeDocument = (document) => {
 // GET /api/reunion
 // ============================================================
 
-router.get("/reunion", async (req, res) => {
+router.get("/", async (req, res) => {
   try {
     await connectDB();
 
@@ -121,7 +121,7 @@ router.get("/reunion", async (req, res) => {
 // POST /api/reunion/register
 // ============================================================
 
-router.post("/reunion/register", verifyToken, async (req, res) => {
+router.post("/register", verifyToken, async (req, res) => {
   try {
     await connectDB();
 
@@ -649,7 +649,7 @@ router.post("/reunion/register", verifyToken, async (req, res) => {
 // GET /api/reunion/my-registration
 // ============================================================
 
-router.get("/reunion/my-registration", verifyToken, async (req, res) => {
+router.get("/my-registration", verifyToken, async (req, res) => {
   try {
     await connectDB();
 
