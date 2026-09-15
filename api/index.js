@@ -12,10 +12,17 @@ import registerRoutes from "../routes/register.routes.js";
 
 const app = express();
 
+// ============================================================
+// ENVIRONMENT
+// ============================================================
+
 const isProduction = process.env.NODE_ENV === "production";
 
 // ============================================================
 // TRUST PROXY
+// ============================================================
+//
+// Required when running behind Vercel / reverse proxy.
 // ============================================================
 
 if (isProduction) {
@@ -36,6 +43,8 @@ console.log("Allowed CORS origins:", clientUrls);
 app.use(
   cors({
     origin: (origin, callback) => {
+      // Allow server-to-server requests, health checks,
+      // Postman, curl, browser navigation, etc.
       if (!origin) {
         return callback(null, true);
       }
@@ -60,7 +69,7 @@ app.use(
 );
 
 // ============================================================
-// BODY PARSER
+// BODY PARSERS
 // ============================================================
 
 app.use(
@@ -83,7 +92,7 @@ app.use(
 app.use(cookieParser());
 
 // ============================================================
-// ROOT
+// ROOT ROUTE
 // ============================================================
 
 app.get("/", (req, res) => {
@@ -96,11 +105,17 @@ app.get("/", (req, res) => {
 // ============================================================
 // HEALTH CHECK
 // ============================================================
+//
+// This route intentionally runs before the MongoDB middleware.
+// It can confirm that the API itself is alive even if MongoDB
+// is temporarily unavailable.
+// ============================================================
 
 app.get("/api/health", (req, res) => {
   return res.status(200).json({
     success: true,
     message: "Server is healthy.",
+    environment: process.env.NODE_ENV || "development",
     timestamp: new Date().toISOString(),
   });
 });
@@ -109,14 +124,9 @@ app.get("/api/health", (req, res) => {
 // DATABASE INITIALIZATION
 // ============================================================
 //
-// Vercel is serverless.
-//
-// Every request that needs MongoDB must make sure the
-// database connection and collections are initialized.
-//
-// connectDB() is cached inside config/db.js, so this does
-// NOT create a new MongoDB connection on every request.
-//
+// connectDB() should internally cache the MongoDB connection.
+// Therefore this middleware does not create a new connection
+// for every request when a cached connection already exists.
 // ============================================================
 
 app.use(async (req, res, next) => {
@@ -129,6 +139,7 @@ app.use(async (req, res, next) => {
 
     return res.status(500).json({
       success: false,
+      code: "database/connection-failed",
       message: "Database connection failed.",
     });
   }
@@ -146,14 +157,35 @@ app.use("/api/auth", authRoutes);
 
 app.use("/api/users", usersRoutes);
 
-app.use("/api/reunion", registerRoutes);
 // ============================================================
-// 404
+// REUNION ROUTES
+// ============================================================
+//
+// register.routes.js must contain:
+//
+// router.get("/", ...)
+// router.post("/register", ...)
+// router.get("/my-registration", ...)
+//
+// Final endpoints:
+//
+// GET  /api/reunion
+// POST /api/reunion/register
+// GET  /api/reunion/my-registration
+// ============================================================
+
+app.use("/api/reunion", registerRoutes);
+
+// ============================================================
+// 404 - ROUTE NOT FOUND
 // ============================================================
 
 app.use((req, res) => {
+  console.warn(`404 Route not found: ${req.method} ${req.originalUrl}`);
+
   return res.status(404).json({
     success: false,
+    code: "route/not-found",
     message: `Route not found: ${req.method} ${req.originalUrl}`,
   });
 });
@@ -172,29 +204,36 @@ app.use((err, req, res, next) => {
   if (err instanceof SyntaxError && err.status === 400 && "body" in err) {
     return res.status(400).json({
       success: false,
+      code: "request/invalid-json",
       message: "Invalid JSON payload.",
     });
   }
 
   // ----------------------------------------------------------
-  // Generic error
+  // CORS / generic errors
   // ----------------------------------------------------------
 
   const statusCode = err.statusCode || err.status || 500;
 
   const message =
-    isProduction && statusCode === 500
+    isProduction && statusCode >= 500
       ? "Internal server error."
       : err.message || "Something went wrong.";
 
   return res.status(statusCode).json({
     success: false,
+    code: "server/error",
     message,
   });
 });
 
 // ============================================================
 // EXPORT
+// ============================================================
+//
+// IMPORTANT:
+// Do NOT use app.listen() here when deploying this file to Vercel.
+// Vercel handles the server automatically.
 // ============================================================
 
 export default app;
