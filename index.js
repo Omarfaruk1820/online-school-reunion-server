@@ -152,10 +152,9 @@ app.use("/api/users", usersRoutes);
 // REUNION ROUTES
 // ============================================================
 
-console.log("Registering reunion routes...");
+console.log("SCHOOL REUNION EXPRESS APP LOADED");
 
-// Temporary route debugger.
-// Keep this before registerRoutes while debugging.
+console.log("Registering reunion routes...");
 
 app.use("/api/reunion", (req, res, next) => {
   console.log(`REUNION PREFIX HIT: ${req.method} ${req.originalUrl}`);
