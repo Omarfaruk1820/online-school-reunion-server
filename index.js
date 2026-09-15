@@ -1,14 +1,14 @@
-import "../config/env.js";
+import "./config/env.js";
 
 import express from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 
-import { connectDB } from "../config/db.js";
+import { connectDB } from "./config/db.js";
 
-import authRoutes from "../routes/auth.routes.js";
-import usersRoutes from "../routes/users.routes.js";
-import registerRoutes from "../routes/register.routes.js";
+import authRoutes from "./routes/auth.routes.js";
+import usersRoutes from "./routes/users.routes.js";
+import registerRoutes from "./routes/register.routes.js";
 
 const app = express();
 
@@ -20,9 +20,6 @@ const isProduction = process.env.NODE_ENV === "production";
 
 // ============================================================
 // TRUST PROXY
-// ============================================================
-//
-// Required when running behind Vercel / reverse proxy.
 // ============================================================
 
 if (isProduction) {
@@ -43,8 +40,8 @@ console.log("Allowed CORS origins:", clientUrls);
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow server-to-server requests, health checks,
-      // Postman, curl, browser navigation, etc.
+      // Allow requests without an Origin header.
+      // Examples: curl, Postman, server-to-server requests.
       if (!origin) {
         return callback(null, true);
       }
@@ -105,11 +102,6 @@ app.get("/", (req, res) => {
 // ============================================================
 // HEALTH CHECK
 // ============================================================
-//
-// This route intentionally runs before the MongoDB middleware.
-// It can confirm that the API itself is alive even if MongoDB
-// is temporarily unavailable.
-// ============================================================
 
 app.get("/api/health", (req, res) => {
   return res.status(200).json({
@@ -124,16 +116,15 @@ app.get("/api/health", (req, res) => {
 // DATABASE INITIALIZATION
 // ============================================================
 //
-// connectDB() should internally cache the MongoDB connection.
-// Therefore this middleware does not create a new connection
-// for every request when a cached connection already exists.
-// ============================================================
+// All API routes below this middleware will have access
+// to an initialized MongoDB connection.
+//
 
 app.use(async (req, res, next) => {
   try {
     await connectDB();
 
-    next();
+    return next();
   } catch (error) {
     console.error("Database initialization failed:", error);
 
@@ -160,24 +151,24 @@ app.use("/api/users", usersRoutes);
 // ============================================================
 // REUNION ROUTES
 // ============================================================
-//
-// register.routes.js must contain:
-//
-// router.get("/", ...)
-// router.post("/register", ...)
-// router.get("/my-registration", ...)
-//
-// Final endpoints:
-//
-// GET  /api/reunion
-// POST /api/reunion/register
-// GET  /api/reunion/my-registration
-// ============================================================
+
+console.log("Registering reunion routes...");
+
+// Temporary route debugger.
+// Keep this before registerRoutes while debugging.
+
+app.use("/api/reunion", (req, res, next) => {
+  console.log(`REUNION PREFIX HIT: ${req.method} ${req.originalUrl}`);
+
+  next();
+});
 
 app.use("/api/reunion", registerRoutes);
 
+console.log("Reunion routes registered successfully.");
+
 // ============================================================
-// 404 - ROUTE NOT FOUND
+// 404 ROUTE
 // ============================================================
 
 app.use((req, res) => {
@@ -197,10 +188,7 @@ app.use((req, res) => {
 app.use((err, req, res, next) => {
   console.error("Server Error:", err);
 
-  // ----------------------------------------------------------
   // Invalid JSON
-  // ----------------------------------------------------------
-
   if (err instanceof SyntaxError && err.status === 400 && "body" in err) {
     return res.status(400).json({
       success: false,
@@ -208,10 +196,6 @@ app.use((err, req, res, next) => {
       message: "Invalid JSON payload.",
     });
   }
-
-  // ----------------------------------------------------------
-  // CORS / generic errors
-  // ----------------------------------------------------------
 
   const statusCode = err.statusCode || err.status || 500;
 
@@ -228,12 +212,26 @@ app.use((err, req, res, next) => {
 });
 
 // ============================================================
-// EXPORT
+// LOCAL DEVELOPMENT SERVER
 // ============================================================
 //
-// IMPORTANT:
-// Do NOT use app.listen() here when deploying this file to Vercel.
-// Vercel handles the server automatically.
+// Vercel handles the HTTP server in production.
+// app.listen() is therefore used only outside production.
+//
+
+const PORT = Number(process.env.PORT) || 5000;
+
+if (!isProduction) {
+  app.listen(PORT, () => {
+    console.log(`School Reunion Server is running on port ${PORT}`);
+  });
+}
+
 // ============================================================
+// EXPORT EXPRESS APP
+// ============================================================
+//
+// Vercel can use the exported Express app directly.
+//
 
 export default app;
