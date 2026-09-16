@@ -54,7 +54,7 @@ let users = null;
 let studentProfiles = null;
 let alumniProfiles = null;
 let reunionEvents = null;
-let reunionRegistrations = null;
+let registrations = null;
 let giftPackages = null;
 let gifts = null;
 let sponsors = null;
@@ -77,15 +77,25 @@ let connectionPromise = null;
 // ============================================================
 
 async function connectDB() {
+  // ----------------------------------------------------------
   // Already connected
+  // ----------------------------------------------------------
+
   if (db) {
     return db;
   }
 
+  // ----------------------------------------------------------
   // Connection already in progress
+  // ----------------------------------------------------------
+
   if (connectionPromise) {
     return connectionPromise;
   }
+
+  // ----------------------------------------------------------
+  // Start connection
+  // ----------------------------------------------------------
 
   connectionPromise = (async () => {
     try {
@@ -104,7 +114,7 @@ async function connectDB() {
       });
 
       // --------------------------------------------------------
-      // Select Database
+      // Select Application Database
       // --------------------------------------------------------
 
       db = client.db(dbName);
@@ -121,7 +131,7 @@ async function connectDB() {
 
       reunionEvents = db.collection("reunionEvents");
 
-      reunionRegistrations = db.collection("reunionRegistrations");
+      registrations = db.collection("registrations");
 
       giftPackages = db.collection("giftPackages");
 
@@ -143,9 +153,9 @@ async function connectDB() {
 
       contactMessages = db.collection("contactMessages");
 
-      // --------------------------------------------------------
-      // Users Indexes
-      // --------------------------------------------------------
+      // ========================================================
+      // USERS INDEXES
+      // ========================================================
 
       await users.createIndex(
         { uid: 1 },
@@ -162,19 +172,22 @@ async function connectDB() {
         },
       );
 
-      // --------------------------------------------------------
-      // Reunion Registration Indexes
-      // --------------------------------------------------------
+      // ========================================================
+      // REGISTRATIONS INDEXES
+      // ========================================================
 
-      await reunionRegistrations.createIndex(
+      // Prevent the same user from registering
+      // multiple times for the same reunion event.
+      await registrations.createIndex(
         { eventId: 1, uid: 1 },
         {
           unique: true,
-          name: "unique_reunion_registration",
+          name: "unique_registration_per_event_user",
         },
       );
 
-      await reunionRegistrations.createIndex(
+      // Every registration gets a unique public registration ID.
+      await registrations.createIndex(
         { registrationId: 1 },
         {
           unique: true,
@@ -182,33 +195,37 @@ async function connectDB() {
         },
       );
 
-      await reunionRegistrations.createIndex(
+      // Useful for loading a user's registration history.
+      await registrations.createIndex(
         { uid: 1, createdAt: -1 },
         {
           name: "user_registration_history",
         },
       );
 
-      await reunionRegistrations.createIndex(
+      // Useful for admin/event registration statistics.
+      await registrations.createIndex(
         { eventId: 1, status: 1 },
         {
           name: "event_registration_status",
         },
       );
 
-      // --------------------------------------------------------
-      // Success Logs
-      // --------------------------------------------------------
+      // ========================================================
+      // SUCCESS LOGS
+      // ========================================================
 
       console.log(`MongoDB connected successfully. Database: ${dbName}`);
 
-      console.log("MongoDB collections initialized.");
+      console.log("MongoDB collections initialized successfully.");
 
       return db;
     } catch (error) {
-      // Reset connection promise so future attempts
-      // can reconnect.
+      // --------------------------------------------------------
+      // Reset state so a future request can retry connection.
+      // --------------------------------------------------------
 
+      db = null;
       connectionPromise = null;
 
       console.error("MongoDB connection failed:", error?.message || error);
@@ -246,7 +263,7 @@ function getCollections() {
     studentProfiles,
     alumniProfiles,
     reunionEvents,
-    reunionRegistrations,
+    registrations,
     giftPackages,
     gifts,
     sponsors,

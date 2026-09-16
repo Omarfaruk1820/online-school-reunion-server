@@ -8,7 +8,7 @@ import { connectDB } from "./config/db.js";
 
 import authRoutes from "./routes/auth.routes.js";
 import usersRoutes from "./routes/users.routes.js";
-import registerRoutes from "./routes/register.routes.js";
+import registrationsRoutes from "./routes/registrations.routes.js";
 
 const app = express();
 
@@ -17,10 +17,6 @@ const app = express();
 // ============================================================
 
 const isProduction = process.env.NODE_ENV === "production";
-
-// ============================================================
-// TRUST PROXY
-// ============================================================
 
 if (isProduction) {
   app.set("trust proxy", 1);
@@ -32,7 +28,7 @@ if (isProduction) {
 
 const clientUrls = (process.env.CLIENT_URL || "")
   .split(",")
-  .map((url) => url.trim())
+  .map((url) => url.trim().replace(/\/$/, ""))
   .filter(Boolean);
 
 console.log("Allowed CORS origins:", clientUrls);
@@ -40,13 +36,14 @@ console.log("Allowed CORS origins:", clientUrls);
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow requests without an Origin header.
-      // Examples: curl, Postman, server-to-server requests.
+      // Allow requests without Origin header
       if (!origin) {
         return callback(null, true);
       }
 
-      if (clientUrls.includes(origin)) {
+      const normalizedOrigin = origin.replace(/\/$/, "");
+
+      if (clientUrls.includes(normalizedOrigin)) {
         return callback(null, true);
       }
 
@@ -89,7 +86,7 @@ app.use(
 app.use(cookieParser());
 
 // ============================================================
-// ROOT ROUTE
+// BASIC ROUTES
 // ============================================================
 
 app.get("/", (req, res) => {
@@ -98,10 +95,6 @@ app.get("/", (req, res) => {
     message: "School Reunion Server is running.",
   });
 });
-
-// ============================================================
-// HEALTH CHECK
-// ============================================================
 
 app.get("/api/health", (req, res) => {
   return res.status(200).json({
@@ -115,16 +108,11 @@ app.get("/api/health", (req, res) => {
 // ============================================================
 // DATABASE INITIALIZATION
 // ============================================================
-//
-// All API routes below this middleware will have access
-// to an initialized MongoDB connection.
-//
 
 app.use(async (req, res, next) => {
   try {
     await connectDB();
-
-    return next();
+    next();
   } catch (error) {
     console.error("Database initialization failed:", error);
 
@@ -149,22 +137,22 @@ app.use("/api/auth", authRoutes);
 app.use("/api/users", usersRoutes);
 
 // ============================================================
-// REUNION ROUTES
+// REGISTRATION ROUTES
 // ============================================================
 
-console.log("SCHOOL REUNION EXPRESS APP LOADED");
+console.log("Registering registrations routes...");
 
-console.log("Registering reunion routes...");
+app.use(
+  "/api/registrations",
+  (req, res, next) => {
+    console.log(`REGISTRATIONS REQUEST: ${req.method} ${req.originalUrl}`);
 
-app.use("/api/reunion", (req, res, next) => {
-  console.log(`REUNION PREFIX HIT: ${req.method} ${req.originalUrl}`);
+    next();
+  },
+  registrationsRoutes,
+);
 
-  next();
-});
-
-app.use("/api/reunion", registerRoutes);
-
-console.log("Reunion routes registered successfully.");
+console.log("Registrations routes registered successfully.");
 
 // ============================================================
 // 404 ROUTE
@@ -213,10 +201,6 @@ app.use((err, req, res, next) => {
 // ============================================================
 // LOCAL DEVELOPMENT SERVER
 // ============================================================
-//
-// Vercel handles the HTTP server in production.
-// app.listen() is therefore used only outside production.
-//
 
 const PORT = Number(process.env.PORT) || 5000;
 
@@ -227,10 +211,7 @@ if (!isProduction) {
 }
 
 // ============================================================
-// EXPORT EXPRESS APP
+// VERCEL / EXPRESS EXPORT
 // ============================================================
-//
-// Vercel can use the exported Express app directly.
-//
 
 export default app;
