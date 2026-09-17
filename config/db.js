@@ -73,6 +73,52 @@ let contactMessages = null;
 let connectionPromise = null;
 
 // ============================================================
+// SAFE INDEX CREATOR
+// ============================================================
+
+async function ensureIndex(collection, key, options = {}) {
+  const indexes = await collection.listIndexes().toArray();
+
+  const existingIndex = indexes.find((index) => {
+    return JSON.stringify(index.key) === JSON.stringify(key);
+  });
+
+  // ----------------------------------------------------------
+  // Existing index found
+  // ----------------------------------------------------------
+
+  if (existingIndex) {
+    console.log(
+      `Index already exists: ${collection.collectionName}.${existingIndex.name}`,
+    );
+
+    if (options.name && existingIndex.name !== options.name) {
+      console.warn(
+        `Index name mismatch detected for ${collection.collectionName}.`,
+      );
+
+      console.warn(`Existing index: ${existingIndex.name}`);
+
+      console.warn(`Expected index: ${options.name}`);
+
+      console.warn("Existing index will be reused.");
+    }
+
+    return existingIndex.name;
+  }
+
+  // ----------------------------------------------------------
+  // Create new index
+  // ----------------------------------------------------------
+
+  const createdIndex = await collection.createIndex(key, options);
+
+  console.log(`Index created: ${collection.collectionName}.${createdIndex}`);
+
+  return createdIndex;
+}
+
+// ============================================================
 // CONNECT DATABASE
 // ============================================================
 
@@ -86,7 +132,7 @@ async function connectDB() {
   }
 
   // ----------------------------------------------------------
-  // Connection already in progress
+  // Connection already running
   // ----------------------------------------------------------
 
   if (connectionPromise) {
@@ -99,28 +145,24 @@ async function connectDB() {
 
   connectionPromise = (async () => {
     try {
-      // --------------------------------------------------------
-      // Connect MongoDB
-      // --------------------------------------------------------
+      console.log("Connecting to MongoDB...");
 
       await client.connect();
-
-      // --------------------------------------------------------
-      // Ping MongoDB
-      // --------------------------------------------------------
 
       await client.db("admin").command({
         ping: 1,
       });
 
+      console.log("MongoDB ping successful.");
+
       // --------------------------------------------------------
-      // Select Application Database
+      // Select database
       // --------------------------------------------------------
 
       db = client.db(dbName);
 
       // --------------------------------------------------------
-      // Initialize Collections
+      // Initialize collections
       // --------------------------------------------------------
 
       users = db.collection("users");
@@ -157,7 +199,8 @@ async function connectDB() {
       // USERS INDEXES
       // ========================================================
 
-      await users.createIndex(
+      await ensureIndex(
+        users,
         { uid: 1 },
         {
           unique: true,
@@ -165,7 +208,8 @@ async function connectDB() {
         },
       );
 
-      await users.createIndex(
+      await ensureIndex(
+        users,
         { email: 1 },
         {
           name: "email_index",
@@ -176,9 +220,8 @@ async function connectDB() {
       // REGISTRATIONS INDEXES
       // ========================================================
 
-      // Prevent the same user from registering
-      // multiple times for the same reunion event.
-      await registrations.createIndex(
+      await ensureIndex(
+        registrations,
         { eventId: 1, uid: 1 },
         {
           unique: true,
@@ -186,8 +229,8 @@ async function connectDB() {
         },
       );
 
-      // Every registration gets a unique public registration ID.
-      await registrations.createIndex(
+      await ensureIndex(
+        registrations,
         { registrationId: 1 },
         {
           unique: true,
@@ -195,16 +238,16 @@ async function connectDB() {
         },
       );
 
-      // Useful for loading a user's registration history.
-      await registrations.createIndex(
+      await ensureIndex(
+        registrations,
         { uid: 1, createdAt: -1 },
         {
           name: "user_registration_history",
         },
       );
 
-      // Useful for admin/event registration statistics.
-      await registrations.createIndex(
+      await ensureIndex(
+        registrations,
         { eventId: 1, status: 1 },
         {
           name: "event_registration_status",
@@ -212,7 +255,7 @@ async function connectDB() {
       );
 
       // ========================================================
-      // SUCCESS LOGS
+      // SUCCESS
       // ========================================================
 
       console.log(`MongoDB connected successfully. Database: ${dbName}`);
@@ -221,10 +264,6 @@ async function connectDB() {
 
       return db;
     } catch (error) {
-      // --------------------------------------------------------
-      // Reset state so a future request can retry connection.
-      // --------------------------------------------------------
-
       db = null;
       connectionPromise = null;
 

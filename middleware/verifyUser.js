@@ -3,12 +3,14 @@ import { getCollections } from "../config/db.js";
 const verifyUser = async (req, res, next) => {
   try {
     // ========================================================
-    // 1. CHECK AUTHENTICATED USER
+    // 1. CHECK FIREBASE USER
     // ========================================================
 
     const uid = req.user?.uid;
 
     if (!uid) {
+      console.error("VERIFY USER - Firebase UID missing.");
+
       return res.status(401).json({
         success: false,
         code: "auth/user-missing",
@@ -22,20 +24,20 @@ const verifyUser = async (req, res, next) => {
     // 2. GET COLLECTIONS
     // ========================================================
 
-    const collections = getCollections();
-
-    if (!collections) {
-      throw new Error("getCollections() returned undefined.");
-    }
-
-    const { users } = collections;
+    const { users } = getCollections();
 
     // ========================================================
     // 3. CHECK USERS COLLECTION
     // ========================================================
 
     if (!users) {
-      throw new Error("Users collection is not initialized.");
+      console.error("VERIFY USER - Users collection is not initialized.");
+
+      return res.status(500).json({
+        success: false,
+        code: "database/users-not-ready",
+        message: "Users collection is not ready.",
+      });
     }
 
     console.log("VERIFY USER - Users collection is available.");
@@ -83,10 +85,15 @@ const verifyUser = async (req, res, next) => {
     }
 
     // ========================================================
-    // 6. CHECK USER STATUS
+    // 6. CHECK STATUS
     // ========================================================
 
     if (user.status !== "active") {
+      console.warn("VERIFY USER - User is not active:", {
+        uid: user.uid,
+        status: user.status,
+      });
+
       return res.status(403).json({
         success: false,
         code: "user/inactive",
@@ -109,16 +116,12 @@ const verifyUser = async (req, res, next) => {
 
     return next();
   } catch (error) {
-    // ========================================================
-    // REAL ERROR
-    // ========================================================
-
     console.error("USER VERIFICATION ERROR:", {
-      name: error?.name || "UnknownError",
-      message: error?.message || "Unknown error",
-      code: error?.code || "UNKNOWN",
-      stack: error?.stack || "No stack available",
-      uid: req.user?.uid || "UID_MISSING",
+      name: error?.name,
+      message: error?.message,
+      code: error?.code,
+      codeName: error?.codeName,
+      uid: req.user?.uid,
     });
 
     return res.status(500).json({

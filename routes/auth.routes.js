@@ -7,10 +7,6 @@ import { getCollections } from "../config/db.js";
 
 const router = express.Router();
 
-// ============================================================
-// CONSTANTS
-// ============================================================
-
 const MAX_NAME_LENGTH = 100;
 const MAX_PHONE_LENGTH = 11;
 const MAX_PHOTO_URL_LENGTH = 2000;
@@ -53,10 +49,6 @@ const PROFILE_FIELD_MAX_LENGTHS = {
   bio: MAX_BIO_LENGTH,
 };
 
-// ============================================================
-// USER PROJECTION
-// ============================================================
-
 const USER_PROJECTION = {
   _id: 1,
   uid: 1,
@@ -73,10 +65,6 @@ const USER_PROJECTION = {
   updatedAt: 1,
   lastLogin: 1,
 };
-
-// ============================================================
-// HELPERS
-// ============================================================
 
 const normalizeString = (value) => {
   return typeof value === "string" ? value.trim() : "";
@@ -116,10 +104,6 @@ const createDefaultProfile = () => {
   };
 };
 
-// ============================================================
-// GET SAFE USER
-// ============================================================
-
 const getSafeUser = async (users, uid) => {
   return users.findOne(
     { uid },
@@ -128,10 +112,6 @@ const getSafeUser = async (users, uid) => {
     },
   );
 };
-
-// ============================================================
-// VALIDATE PROFILE FIELD
-// ============================================================
 
 const validateProfileField = (field, value) => {
   if (typeof value !== "string") {
@@ -156,22 +136,6 @@ const validateProfileField = (field, value) => {
 
   return null;
 };
-
-// ============================================================
-// BUILD PROFILE UPDATE
-// ============================================================
-//
-// Important:
-// We use:
-// profile.batch
-// profile.className
-// profile.department
-//
-// instead of:
-// profile = {...}
-//
-// This prevents replacing the entire profile object.
-// ============================================================
 
 const buildProfileUpdate = (profile) => {
   const updateData = {};
@@ -218,24 +182,6 @@ const buildProfileUpdate = (profile) => {
     error: null,
   };
 };
-
-// ============================================================
-// POST /api/auth/register
-// ============================================================
-//
-// Creates MongoDB user after Firebase authentication.
-//
-// Firebase authentication:
-// Client
-//    ↓
-// Firebase
-//    ↓
-// ID Token
-//    ↓
-// verifyToken
-//    ↓
-// MongoDB users collection
-// ============================================================
 
 router.post("/register", verifyToken, async (req, res) => {
   try {
@@ -488,43 +434,12 @@ router.post("/register", verifyToken, async (req, res) => {
   }
 });
 
-// ============================================================
-// GET /api/auth/me
-// ============================================================
-//
-// Returns currently authenticated MongoDB user.
-// ============================================================
-
 router.get("/me", verifyToken, verifyUser, (req, res) => {
   return res.status(200).json({
     success: true,
     user: req.userData,
   });
 });
-
-// ============================================================
-// PATCH /api/auth/me
-// UPDATE CURRENT USER PROFILE
-// ============================================================
-//
-// User can update ONLY their own:
-//
-// name
-// phone
-// photo
-// profile.*
-//
-// User CANNOT update:
-//
-// uid
-// email
-// role
-// status
-// provider
-// emailVerified
-// createdAt
-// lastLogin
-// ============================================================
 
 router.patch("/me", verifyToken, verifyUser, async (req, res) => {
   try {
@@ -758,17 +673,6 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
   }
 });
 
-// ============================================================
-// POST /api/auth/logout
-// ============================================================
-//
-// Firebase logout actually happens on frontend:
-//
-// signOut(auth)
-//
-// This endpoint only records the user's latest activity.
-// ============================================================
-
 router.post("/logout", verifyToken, async (req, res) => {
   try {
     const { users } = getCollections();
@@ -818,9 +722,5 @@ router.post("/logout", verifyToken, async (req, res) => {
     });
   }
 });
-
-// ============================================================
-// EXPORT ROUTER
-// ============================================================
 
 export default router;

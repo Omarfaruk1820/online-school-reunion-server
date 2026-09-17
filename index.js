@@ -10,6 +10,10 @@ import authRoutes from "./routes/auth.routes.js";
 import usersRoutes from "./routes/users.routes.js";
 import registrationsRoutes from "./routes/registrations.routes.js";
 
+// ============================================================
+// EXPRESS APP
+// ============================================================
+
 const app = express();
 
 // ============================================================
@@ -36,18 +40,30 @@ console.log("Allowed CORS origins:", clientUrls);
 app.use(
   cors({
     origin: (origin, callback) => {
+      // --------------------------------------------------------
       // Allow requests without Origin header
+      // --------------------------------------------------------
+
       if (!origin) {
         return callback(null, true);
       }
 
       const normalizedOrigin = origin.replace(/\/$/, "");
 
+      // --------------------------------------------------------
+      // Allow configured frontend origins
+      // --------------------------------------------------------
+
       if (clientUrls.includes(normalizedOrigin)) {
         return callback(null, true);
       }
 
       console.warn("CORS blocked origin:", origin);
+
+      // --------------------------------------------------------
+      // Do not throw an error for blocked origins.
+      // Simply don't allow the origin.
+      // --------------------------------------------------------
 
       return callback(null, false);
     },
@@ -86,7 +102,7 @@ app.use(
 app.use(cookieParser());
 
 // ============================================================
-// BASIC ROUTES
+// BASIC SERVER ROUTES
 // ============================================================
 
 app.get("/", (req, res) => {
@@ -108,13 +124,21 @@ app.get("/api/health", (req, res) => {
 // ============================================================
 // DATABASE INITIALIZATION
 // ============================================================
+//
+// Every API request that reaches this middleware will make sure
+// MongoDB is connected.
+//
+// connectDB() is cached, so it does not create a new MongoDB
+// connection every time.
+//
 
 app.use(async (req, res, next) => {
   try {
     await connectDB();
+
     next();
   } catch (error) {
-    console.error("Database initialization failed:", error);
+    console.error("Database initialization failed:", error?.message || error);
 
     return res.status(500).json({
       success: false,
@@ -128,13 +152,21 @@ app.use(async (req, res, next) => {
 // AUTH ROUTES
 // ============================================================
 
+console.log("Registering auth routes...");
+
 app.use("/api/auth", authRoutes);
+
+console.log("Auth routes registered successfully.");
 
 // ============================================================
 // USER ROUTES
 // ============================================================
 
+console.log("Registering users routes...");
+
 app.use("/api/users", usersRoutes);
+
+console.log("Users routes registered successfully.");
 
 // ============================================================
 // REGISTRATION ROUTES
@@ -175,7 +207,10 @@ app.use((req, res) => {
 app.use((err, req, res, next) => {
   console.error("Server Error:", err);
 
+  // ----------------------------------------------------------
   // Invalid JSON
+  // ----------------------------------------------------------
+
   if (err instanceof SyntaxError && err.status === 400 && "body" in err) {
     return res.status(400).json({
       success: false,
@@ -184,7 +219,15 @@ app.use((err, req, res, next) => {
     });
   }
 
+  // ----------------------------------------------------------
+  // Determine status code
+  // ----------------------------------------------------------
+
   const statusCode = err.statusCode || err.status || 500;
+
+  // ----------------------------------------------------------
+  // Hide internal errors in production
+  // ----------------------------------------------------------
 
   const message =
     isProduction && statusCode >= 500
@@ -211,7 +254,7 @@ if (!isProduction) {
 }
 
 // ============================================================
-// VERCEL / EXPRESS EXPORT
+// VERCEL / SERVERLESS EXPORT
 // ============================================================
 
 export default app;
