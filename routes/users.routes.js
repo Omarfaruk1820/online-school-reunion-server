@@ -17,11 +17,72 @@ const DEFAULT_PAGE = 1;
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 50;
 
+const MAX_NAME_LENGTH = 100;
+const MAX_PHONE_LENGTH = 11;
+const MAX_PHOTO_URL_LENGTH = 2000;
+
+const MAX_BATCH_LENGTH = 50;
+const MAX_CLASS_LENGTH = 50;
+const MAX_DEPARTMENT_LENGTH = 50;
+const MAX_PROFESSION_LENGTH = 100;
+const MAX_ORGANIZATION_LENGTH = 150;
+const MAX_ADDRESS_LENGTH = 300;
+const MAX_BIO_LENGTH = 1000;
+
 const ALLOWED_ROLES = ["student", "admin"];
 
 const ALLOWED_STATUSES = ["active", "inactive", "blocked"];
 
+const ALLOWED_DEPARTMENTS = [
+  "science",
+  "commerce",
+  "humanities",
+  "vocational",
+  "none",
+];
+
+const ALLOWED_PROFILE_FIELDS = [
+  "batch",
+  "className",
+  "department",
+  "profession",
+  "organization",
+  "address",
+  "bio",
+];
+
+const PROFILE_FIELD_MAX_LENGTHS = {
+  batch: MAX_BATCH_LENGTH,
+  className: MAX_CLASS_LENGTH,
+  department: MAX_DEPARTMENT_LENGTH,
+  profession: MAX_PROFESSION_LENGTH,
+  organization: MAX_ORGANIZATION_LENGTH,
+  address: MAX_ADDRESS_LENGTH,
+  bio: MAX_BIO_LENGTH,
+};
+
 const PHONE_REGEX = /^01[3-9]\d{8}$/;
+
+// ============================================================
+// USER PROJECTION
+// ============================================================
+
+const USER_PROJECTION = {
+  _id: 1,
+  uid: 1,
+  name: 1,
+  email: 1,
+  phone: 1,
+  photo: 1,
+  role: 1,
+  status: 1,
+  provider: 1,
+  emailVerified: 1,
+  createdAt: 1,
+  updatedAt: 1,
+  lastLogin: 1,
+  profile: 1,
+};
 
 // ============================================================
 // HELPERS
@@ -47,8 +108,23 @@ function isValidBangladeshiPhone(phone) {
   return PHONE_REGEX.test(phone);
 }
 
+function isValidHttpUrl(value) {
+  if (!value) {
+    return true;
+  }
+
+  try {
+    const url = new URL(value);
+
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 function parsePagination(page, limit) {
   const parsedPage = Number.parseInt(page, 10);
+
   const parsedLimit = Number.parseInt(limit, 10);
 
   const safePage =
@@ -67,25 +143,78 @@ function parsePagination(page, limit) {
 }
 
 // ============================================================
-// USER PROJECTION
+// PROFILE VALIDATION
 // ============================================================
 
-const USER_PROJECTION = {
-  _id: 1,
-  uid: 1,
-  name: 1,
-  email: 1,
-  phone: 1,
-  photo: 1,
-  role: 1,
-  status: 1,
-  provider: 1,
-  emailVerified: 1,
-  createdAt: 1,
-  updatedAt: 1,
-  lastLogin: 1,
-  profile: 1,
-};
+function validateProfile(profile) {
+  if (profile === undefined) {
+    return {
+      valid: true,
+      profile: undefined,
+      error: null,
+    };
+  }
+
+  if (
+    profile === null ||
+    typeof profile !== "object" ||
+    Array.isArray(profile)
+  ) {
+    return {
+      valid: false,
+      profile: undefined,
+      error: "Profile must be a valid object.",
+    };
+  }
+
+  const cleanProfile = {};
+
+  for (const field of ALLOWED_PROFILE_FIELDS) {
+    if (profile[field] === undefined) {
+      continue;
+    }
+
+    if (typeof profile[field] !== "string") {
+      return {
+        valid: false,
+        profile: undefined,
+        error: `${field} must be a string.`,
+      };
+    }
+
+    const value = profile[field].trim();
+
+    const maxLength = PROFILE_FIELD_MAX_LENGTHS[field];
+
+    if (maxLength && value.length > maxLength) {
+      return {
+        valid: false,
+        profile: undefined,
+        error: `${field} must be ${maxLength} characters or less.`,
+      };
+    }
+
+    if (
+      field === "department" &&
+      value &&
+      !ALLOWED_DEPARTMENTS.includes(value)
+    ) {
+      return {
+        valid: false,
+        profile: undefined,
+        error: "Invalid department selected.",
+      };
+    }
+
+    cleanProfile[field] = value;
+  }
+
+  return {
+    valid: true,
+    profile: cleanProfile,
+    error: null,
+  };
+}
 
 // ============================================================
 // SANITIZE USER
@@ -101,7 +230,17 @@ function sanitizeUser(user) {
   };
 
   // ----------------------------------------------------------
-  // Never expose empty/null photo
+  // Remove MongoDB internal _id from API response
+  // ----------------------------------------------------------
+
+  if (sanitizedUser._id) {
+    sanitizedUser.id = sanitizedUser._id.toString();
+
+    delete sanitizedUser._id;
+  }
+
+  // ----------------------------------------------------------
+  // Photo
   // ----------------------------------------------------------
 
   const cleanPhoto = cleanString(sanitizedUser.photo);
@@ -113,12 +252,7 @@ function sanitizeUser(user) {
   }
 
   // ----------------------------------------------------------
-  // Phone handling
-  //
-  // IMPORTANT:
-  // - Actual phone remains unchanged.
-  // - Google user may legitimately have null phone.
-  // - We do NOT convert null into empty string.
+  // Phone
   // ----------------------------------------------------------
 
   if (sanitizedUser.phone !== null && typeof sanitizedUser.phone !== "string") {
@@ -137,130 +271,184 @@ function sanitizeUsers(users) {
 }
 
 // ============================================================
-// POST /api/users
-// CREATE / SYNCHRONIZE USER
+// GET USER BY UID
 // ============================================================
+
+async function getUserByUid(users, uid) {
+  return users.findOne(
+    { uid },
+    {
+      projection: USER_PROJECTION,
+    },
+  );
+}
+
+// ============================================================
+// POST /api/users
+// ============================================================
+//
+// Create or synchronize the authenticated Firebase user.
+//
+// This endpoint is used by AuthProvider after Firebase login.
+//
+// Protected by Firebase ID token.
+//
 
 router.post("/", verifyToken, async (req, res) => {
   try {
     const { users } = getCollections();
 
+    if (!users) {
+      return res.status(500).json({
+        success: false,
+        code: "database/users-not-ready",
+        message: "Database is not ready.",
+      });
+    }
+
     const firebaseUser = req.user;
 
-    // --------------------------------------------------------
-    // Firebase identity
-    // --------------------------------------------------------
+    // ========================================================
+    // FIREBASE IDENTITY
+    // ========================================================
 
     const uid = firebaseUser?.uid;
 
     if (!uid) {
       return res.status(401).json({
         success: false,
+        code: "auth/uid-missing",
         message: "Authenticated Firebase user not found.",
       });
     }
 
     const firebaseEmail = normalizeEmail(firebaseUser.email);
 
-    // --------------------------------------------------------
-    // Client profile data
-    // --------------------------------------------------------
+    if (!firebaseEmail) {
+      return res.status(400).json({
+        success: false,
+        code: "auth/email-missing",
+        message: "A valid Firebase email is required.",
+      });
+    }
 
-    const { name, phone, photo, profile } = req.body || {};
+    // ========================================================
+    // CLIENT DATA
+    // ========================================================
 
-    const cleanName = cleanString(name);
-    const cleanPhone = cleanString(phone);
-    const cleanPhoto = cleanString(photo);
+    const body = req.body || {};
 
-    // --------------------------------------------------------
-    // Provider
-    //
-    // Provider is determined from Firebase identity.
-    // We do not trust the client to decide it.
-    // --------------------------------------------------------
+    const cleanName = cleanString(body.name);
+    const cleanPhone = cleanString(body.phone);
+    const cleanPhoto = cleanString(body.photo);
 
-    const firebaseProvider = cleanString(firebaseUser.provider);
+    // ========================================================
+    // PROVIDER
+    // ========================================================
 
-    const provider =
-      firebaseProvider === "google.com"
-        ? "google"
-        : firebaseProvider || "password";
+    const provider = cleanString(firebaseUser.provider) || "password";
 
     const isGoogleProvider = provider === "google";
 
     // ========================================================
-    // VALIDATE NAME
+    // DEVELOPMENT DEBUG
     // ========================================================
 
-    if (cleanName.length > 100) {
+    if (process.env.NODE_ENV !== "production") {
+      console.log("POST /api/users payload:", {
+        uid,
+        email: firebaseEmail,
+        provider,
+        name: cleanName,
+        phone: cleanPhone ? "***********" : "",
+        hasPhoto: Boolean(cleanPhoto),
+        hasProfile: Boolean(body.profile),
+      });
+    }
+
+    // ========================================================
+    // NAME VALIDATION
+    // ========================================================
+
+    if (cleanName.length > MAX_NAME_LENGTH) {
       return res.status(400).json({
         success: false,
+        code: "validation/name-too-long",
         message: "Name cannot exceed 100 characters.",
       });
     }
 
-    // ========================================================
-    // VALIDATE PHONE
-    // ========================================================
+    // --------------------------------------------------------
+    // Password user must provide name
+    // --------------------------------------------------------
 
-    /*
-     * EMAIL/PASSWORD:
-     * Phone is REQUIRED.
-     *
-     * GOOGLE:
-     * Phone is OPTIONAL.
-     *
-     * Therefore:
-     *
-     * password + empty phone
-     *        => 400
-     *
-     * google + empty phone
-     *        => allowed
-     *
-     * google + valid phone
-     *        => allowed
-     */
+    if (!isGoogleProvider && !cleanName) {
+      return res.status(400).json({
+        success: false,
+        code: "validation/name-required",
+        message: "Name is required.",
+      });
+    }
+
+    // ========================================================
+    // PHONE VALIDATION
+    // ========================================================
 
     if (!isGoogleProvider && !cleanPhone) {
       return res.status(400).json({
         success: false,
+        code: "validation/phone-required",
         message: "Phone number is required.",
       });
     }
 
-    // If a phone number is provided, it must always be valid.
+    if (cleanPhone && cleanPhone.length !== MAX_PHONE_LENGTH) {
+      return res.status(400).json({
+        success: false,
+        code: "validation/phone-length",
+        message: "Phone number must contain 11 digits.",
+      });
+    }
+
     if (cleanPhone && !isValidBangladeshiPhone(cleanPhone)) {
       return res.status(400).json({
         success: false,
+        code: "validation/phone-invalid",
         message: "Enter a valid Bangladeshi phone number.",
       });
     }
 
     // ========================================================
-    // VALIDATE PHOTO
+    // PHOTO VALIDATION
     // ========================================================
 
-    if (cleanPhoto.length > 2000) {
+    if (cleanPhoto.length > MAX_PHOTO_URL_LENGTH) {
       return res.status(400).json({
         success: false,
+        code: "validation/photo-too-long",
         message: "Photo URL is too long.",
       });
     }
 
-    // ========================================================
-    // VALIDATE PROFILE
-    // ========================================================
-
-    if (
-      profile !== undefined &&
-      (profile === null ||
-        typeof profile !== "object" ||
-        Array.isArray(profile))
-    ) {
+    if (cleanPhoto && !isValidHttpUrl(cleanPhoto)) {
       return res.status(400).json({
         success: false,
-        message: "Profile must be a valid object.",
+        code: "validation/photo-invalid",
+        message: "Please provide a valid photo URL.",
+      });
+    }
+
+    // ========================================================
+    // PROFILE VALIDATION
+    // ========================================================
+
+    const profileValidation = validateProfile(body.profile);
+
+    if (!profileValidation.valid) {
+      return res.status(400).json({
+        success: false,
+        code: "validation/profile-invalid",
+        message: profileValidation.error,
       });
     }
 
@@ -279,20 +467,11 @@ router.post("/", verifyToken, async (req, res) => {
     if (existingUser) {
       const now = new Date();
 
-      const existingPhone =
-        typeof existingUser.phone === "string" ? existingUser.phone.trim() : "";
-
       const updateOperation = {
         $set: {
-          email: firebaseEmail || existingUser.email || "",
+          email: firebaseEmail,
 
-          name:
-            cleanName ||
-            existingUser.name ||
-            cleanString(firebaseUser.name) ||
-            "School Member",
-
-          provider: existingUser.provider || provider,
+          provider,
 
           emailVerified: firebaseUser.emailVerified === true,
 
@@ -303,35 +482,43 @@ router.post("/", verifyToken, async (req, res) => {
       };
 
       // ------------------------------------------------------
+      // NAME
+      // ------------------------------------------------------
+      //
+      // Never replace a real existing name with
+      // "School Member".
+      //
+
+      if (cleanName) {
+        updateOperation.$set.name = cleanName;
+      } else if (
+        !cleanString(existingUser.name) &&
+        cleanString(firebaseUser.name)
+      ) {
+        updateOperation.$set.name = cleanString(firebaseUser.name);
+      }
+
+      // ------------------------------------------------------
       // PHONE
       // ------------------------------------------------------
 
-      /*
-       * IMPORTANT:
-       *
-       * If Google login does not provide a phone:
-       *
-       * cleanPhone = ""
-       *
-       * We DO NOT overwrite an existing phone.
-       *
-       * Example:
-       *
-       * Existing user:
-       * phone: "01822637989"
-       *
-       * Google login:
-       * phone: ""
-       *
-       * Result:
-       * phone remains "01822637989"
-       *
-       * If the existing Google user has no phone:
-       * phone remains null.
-       */
-
       if (cleanPhone) {
         updateOperation.$set.phone = cleanPhone;
+      }
+
+      // ------------------------------------------------------
+      // Existing password account without phone
+      // ------------------------------------------------------
+
+      const existingPhone =
+        typeof existingUser.phone === "string" ? existingUser.phone.trim() : "";
+
+      if (!isGoogleProvider && !cleanPhone && !existingPhone) {
+        return res.status(400).json({
+          success: false,
+          code: "validation/phone-required",
+          message: "Phone number is required.",
+        });
       }
 
       // ------------------------------------------------------
@@ -340,43 +527,34 @@ router.post("/", verifyToken, async (req, res) => {
 
       if (cleanPhoto) {
         updateOperation.$set.photo = cleanPhoto;
-      } else if (existingUser.photo && cleanString(existingUser.photo)) {
-        updateOperation.$set.photo = cleanString(existingUser.photo);
-      } else if (firebaseUser.picture && cleanString(firebaseUser.picture)) {
-        updateOperation.$set.photo = cleanString(firebaseUser.picture);
       } else {
-        updateOperation.$unset = {
-          photo: "",
-        };
+        const existingPhoto = cleanString(existingUser.photo);
+
+        const firebasePicture = cleanString(firebaseUser.picture);
+
+        if (existingPhoto) {
+          updateOperation.$set.photo = existingPhoto;
+        } else if (firebasePicture && isValidHttpUrl(firebasePicture)) {
+          updateOperation.$set.photo = firebasePicture;
+        }
       }
 
       // ------------------------------------------------------
       // PROFILE
       // ------------------------------------------------------
 
-      if (profile && typeof profile === "object" && !Array.isArray(profile)) {
-        updateOperation.$set.profile = profile;
+      if (
+        profileValidation.profile &&
+        Object.keys(profileValidation.profile).length > 0
+      ) {
+        updateOperation.$set.profile = {
+          ...(existingUser.profile || {}),
+          ...profileValidation.profile,
+        };
       }
 
       // ------------------------------------------------------
-      // IMPORTANT:
-      //
-      // If this is an existing manual/password user and the
-      // database already contains an actual phone, never remove it.
-      //
-      // If this is an existing Google user with null phone and
-      // no new phone is provided, null remains untouched.
-      // ------------------------------------------------------
-
-      if (!cleanPhone && !isGoogleProvider && !existingPhone) {
-        return res.status(400).json({
-          success: false,
-          message: "Phone number is required.",
-        });
-      }
-
-      // ------------------------------------------------------
-      // MongoDB update
+      // UPDATE
       // ------------------------------------------------------
 
       await users.updateOne(
@@ -387,20 +565,14 @@ router.post("/", verifyToken, async (req, res) => {
       );
 
       // ------------------------------------------------------
-      // Get updated user
+      // GET UPDATED USER
       // ------------------------------------------------------
 
-      const updatedUser = await users.findOne(
-        {
-          uid,
-        },
-        {
-          projection: USER_PROJECTION,
-        },
-      );
+      const updatedUser = await getUserByUid(users, uid);
 
       return res.status(200).json({
         success: true,
+        code: "user/synchronized",
         message: "User synchronized successfully.",
         user: sanitizeUser(updatedUser),
       });
@@ -410,19 +582,20 @@ router.post("/", verifyToken, async (req, res) => {
     // CREATE NEW USER
     // ========================================================
 
-    /*
-     * For a NEW password user:
-     *
-     * phone must exist.
-     *
-     * For a NEW Google user:
-     *
-     * phone can be empty.
-     */
+    // Password users must have name and phone.
+
+    if (!isGoogleProvider && !cleanName) {
+      return res.status(400).json({
+        success: false,
+        code: "validation/name-required",
+        message: "Name is required.",
+      });
+    }
 
     if (!isGoogleProvider && !cleanPhone) {
       return res.status(400).json({
         success: false,
+        code: "validation/phone-required",
         message: "Phone number is required.",
       });
     }
@@ -432,40 +605,22 @@ router.post("/", verifyToken, async (req, res) => {
     const newUser = {
       uid,
 
-      /*
-       * Email should normally exist because Firebase
-       * authentication provides it.
-       */
-      email: firebaseEmail || null,
+      email: firebaseEmail,
 
       name: cleanName || cleanString(firebaseUser.name) || "School Member",
 
-      /*
-       * IMPORTANT:
-       *
-       * Manual registration:
-       * phone: "01822637989"
-       *
-       * Google without phone:
-       * phone: null
-       *
-       * Google with phone:
-       * phone: "01822637989"
-       */
       phone: cleanPhone || null,
 
       provider,
 
+      // Server controlled
       role: "student",
 
       status: "active",
 
       emailVerified: firebaseUser.emailVerified === true,
 
-      profile:
-        profile && typeof profile === "object" && !Array.isArray(profile)
-          ? profile
-          : {},
+      profile: profileValidation.profile || {},
 
       createdAt: now,
 
@@ -474,21 +629,39 @@ router.post("/", verifyToken, async (req, res) => {
       lastLogin: now,
     };
 
-    // --------------------------------------------------------
-    // Add photo only if available
-    // --------------------------------------------------------
+    // ========================================================
+    // FIREBASE PHOTO
+    // ========================================================
+
+    const firebasePicture = cleanString(firebaseUser.picture);
 
     if (cleanPhoto) {
       newUser.photo = cleanPhoto;
-    } else if (firebaseUser.picture && cleanString(firebaseUser.picture)) {
-      newUser.photo = cleanString(firebaseUser.picture);
+    } else if (
+      firebasePicture &&
+      firebasePicture.length <= MAX_PHOTO_URL_LENGTH &&
+      isValidHttpUrl(firebasePicture)
+    ) {
+      newUser.photo = firebasePicture;
     }
 
-    // --------------------------------------------------------
-    // Insert user
-    // --------------------------------------------------------
+    // ========================================================
+    // INSERT
+    // ========================================================
 
     const result = await users.insertOne(newUser);
+
+    if (!result.insertedId) {
+      return res.status(500).json({
+        success: false,
+        code: "user/create-failed",
+        message: "Failed to create user.",
+      });
+    }
+
+    // ========================================================
+    // GET CREATED USER
+    // ========================================================
 
     const createdUser = await users.findOne(
       {
@@ -499,27 +672,38 @@ router.post("/", verifyToken, async (req, res) => {
       },
     );
 
+    if (!createdUser) {
+      return res.status(500).json({
+        success: false,
+        code: "user/retrieve-failed",
+        message: "User was created but could not be retrieved.",
+      });
+    }
+
     return res.status(201).json({
       success: true,
+      code: "user/created",
       message: "User created successfully.",
       user: sanitizeUser(createdUser),
     });
   } catch (error) {
     console.error("POST /api/users error:", error);
 
-    // --------------------------------------------------------
-    // Duplicate key
-    // --------------------------------------------------------
+    // ========================================================
+    // DUPLICATE KEY
+    // ========================================================
 
     if (error?.code === 11000) {
       return res.status(409).json({
         success: false,
+        code: "user/already-exists",
         message: "User already exists.",
       });
     }
 
     return res.status(500).json({
       success: false,
+      code: "user/synchronization-failed",
       message: "Failed to synchronize user.",
     });
   }
@@ -527,16 +711,25 @@ router.post("/", verifyToken, async (req, res) => {
 
 // ============================================================
 // GET /api/users
-// ADMIN: GET USERS
 // ============================================================
+//
+// Admin only.
+//
+// Supports:
+//
+// ?page=1
+// ?limit=10
+// ?search=omar
+// ?sort=newest
+// ?sort=oldest
+// ?sort=name-asc
+// ?sort=name-desc
+// ?sort=last-login
+//
 
 router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
   try {
     const { users } = getCollections();
-
-    // --------------------------------------------------------
-    // Pagination
-    // --------------------------------------------------------
 
     const { page, limit, skip } = parsePagination(
       req.query.page,
@@ -626,7 +819,7 @@ router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
     }
 
     // --------------------------------------------------------
-    // Count + users
+    // Count + data
     // --------------------------------------------------------
 
     const [totalUsers, userList] = await Promise.all([
@@ -651,8 +844,11 @@ router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
 
       pagination: {
         total: totalUsers,
+
         page,
+
         limit,
+
         totalPages,
 
         hasNextPage: page < totalPages,
@@ -665,15 +861,11 @@ router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
 
     return res.status(500).json({
       success: false,
+      code: "users/fetch-failed",
       message: "Failed to get users.",
     });
   }
 });
-
-// ============================================================
-// GET /api/users/:email
-// GET CURRENT USER / ADMIN USER
-// ============================================================
 
 router.get("/:email", verifyToken, verifyUser, async (req, res) => {
   try {
@@ -684,6 +876,7 @@ router.get("/:email", verifyToken, verifyUser, async (req, res) => {
     if (!requestedEmail) {
       return res.status(400).json({
         success: false,
+        code: "validation/email-invalid",
         message: "Valid email is required.",
       });
     }
@@ -693,12 +886,13 @@ router.get("/:email", verifyToken, verifyUser, async (req, res) => {
     const isAdmin = currentUser?.role === "admin";
 
     // --------------------------------------------------------
-    // Normal user can only access own account
+    // User access control
     // --------------------------------------------------------
 
     if (!isAdmin && normalizeEmail(currentUser?.email) !== requestedEmail) {
       return res.status(403).json({
         success: false,
+        code: "user/access-denied",
         message: "You are not allowed to access this user.",
       });
     }
@@ -719,6 +913,7 @@ router.get("/:email", verifyToken, verifyUser, async (req, res) => {
     if (!user) {
       return res.status(404).json({
         success: false,
+        code: "user/not-found",
         message: "User not found.",
       });
     }
@@ -732,15 +927,11 @@ router.get("/:email", verifyToken, verifyUser, async (req, res) => {
 
     return res.status(500).json({
       success: false,
+      code: "user/fetch-failed",
       message: "Failed to get user.",
     });
   }
 });
-
-// ============================================================
-// PATCH /api/users/:id/role
-// ADMIN: CHANGE USER ROLE
-// ============================================================
 
 router.patch(
   "/:id/role",
@@ -753,35 +944,37 @@ router.patch(
 
       const { id } = req.params;
 
-      // ------------------------------------------------------
-      // Validate ObjectId
-      // ------------------------------------------------------
+      // --------------------------------------------------------
+      // ObjectId
+      // --------------------------------------------------------
 
       if (!isValidObjectId(id)) {
         return res.status(400).json({
           success: false,
+          code: "validation/id-invalid",
           message: "Invalid user ID.",
         });
       }
 
       const objectId = new ObjectId(id);
 
-      // ------------------------------------------------------
-      // Validate role
-      // ------------------------------------------------------
+      // --------------------------------------------------------
+      // Role
+      // --------------------------------------------------------
 
       const role = cleanString(req.body?.role);
 
       if (!ALLOWED_ROLES.includes(role)) {
         return res.status(400).json({
           success: false,
+          code: "validation/role-invalid",
           message: `Invalid role. Allowed roles: ${ALLOWED_ROLES.join(", ")}.`,
         });
       }
 
-      // ------------------------------------------------------
-      // Find target user
-      // ------------------------------------------------------
+      // --------------------------------------------------------
+      // Target user
+      // --------------------------------------------------------
 
       const targetUser = await users.findOne({
         _id: objectId,
@@ -790,36 +983,39 @@ router.patch(
       if (!targetUser) {
         return res.status(404).json({
           success: false,
+          code: "user/not-found",
           message: "User not found.",
         });
       }
 
-      // ------------------------------------------------------
+      // --------------------------------------------------------
       // Prevent self role change
-      // ------------------------------------------------------
+      // --------------------------------------------------------
 
       if (targetUser.uid === req.user.uid) {
         return res.status(403).json({
           success: false,
+          code: "admin/self-role-change",
           message: "You cannot change your own role.",
         });
       }
 
-      // ------------------------------------------------------
-      // No unnecessary update
-      // ------------------------------------------------------
+      // --------------------------------------------------------
+      // Already same role
+      // --------------------------------------------------------
 
       if (targetUser.role === role) {
         return res.status(200).json({
           success: true,
+          code: "user/role-unchanged",
           message: "User already has this role.",
           user: sanitizeUser(targetUser),
         });
       }
 
-      // ------------------------------------------------------
-      // Update role
-      // ------------------------------------------------------
+      // --------------------------------------------------------
+      // Update
+      // --------------------------------------------------------
 
       await users.updateOne(
         {
@@ -833,9 +1029,9 @@ router.patch(
         },
       );
 
-      // ------------------------------------------------------
-      // Get updated user
-      // ------------------------------------------------------
+      // --------------------------------------------------------
+      // Retrieve updated user
+      // --------------------------------------------------------
 
       const updatedUser = await users.findOne(
         {
@@ -848,6 +1044,7 @@ router.patch(
 
       return res.status(200).json({
         success: true,
+        code: "user/role-updated",
         message: "User role updated successfully.",
         user: sanitizeUser(updatedUser),
       });
@@ -856,16 +1053,12 @@ router.patch(
 
       return res.status(500).json({
         success: false,
+        code: "user/role-update-failed",
         message: "Failed to update user role.",
       });
     }
   },
 );
-
-// ============================================================
-// PATCH /api/users/:id/status
-// ADMIN: CHANGE USER STATUS
-// ============================================================
 
 router.patch(
   "/:id/status",
@@ -878,37 +1071,39 @@ router.patch(
 
       const { id } = req.params;
 
-      // ------------------------------------------------------
-      // Validate ObjectId
-      // ------------------------------------------------------
+      // --------------------------------------------------------
+      // ObjectId
+      // --------------------------------------------------------
 
       if (!isValidObjectId(id)) {
         return res.status(400).json({
           success: false,
+          code: "validation/id-invalid",
           message: "Invalid user ID.",
         });
       }
 
       const objectId = new ObjectId(id);
 
-      // ------------------------------------------------------
-      // Validate status
-      // ------------------------------------------------------
+      // --------------------------------------------------------
+      // Status
+      // --------------------------------------------------------
 
       const status = cleanString(req.body?.status);
 
       if (!ALLOWED_STATUSES.includes(status)) {
         return res.status(400).json({
           success: false,
+          code: "validation/status-invalid",
           message: `Invalid status. Allowed statuses: ${ALLOWED_STATUSES.join(
             ", ",
           )}.`,
         });
       }
 
-      // ------------------------------------------------------
-      // Find target user
-      // ------------------------------------------------------
+      // --------------------------------------------------------
+      // Target user
+      // --------------------------------------------------------
 
       const targetUser = await users.findOne({
         _id: objectId,
@@ -917,36 +1112,39 @@ router.patch(
       if (!targetUser) {
         return res.status(404).json({
           success: false,
+          code: "user/not-found",
           message: "User not found.",
         });
       }
 
-      // ------------------------------------------------------
+      // --------------------------------------------------------
       // Prevent self status change
-      // ------------------------------------------------------
+      // --------------------------------------------------------
 
       if (targetUser.uid === req.user.uid) {
         return res.status(403).json({
           success: false,
+          code: "admin/self-status-change",
           message: "You cannot change your own account status.",
         });
       }
 
-      // ------------------------------------------------------
-      // No unnecessary update
-      // ------------------------------------------------------
+      // --------------------------------------------------------
+      // Already same status
+      // --------------------------------------------------------
 
       if (targetUser.status === status) {
         return res.status(200).json({
           success: true,
+          code: "user/status-unchanged",
           message: "User already has this account status.",
           user: sanitizeUser(targetUser),
         });
       }
 
-      // ------------------------------------------------------
-      // Update status
-      // ------------------------------------------------------
+      // --------------------------------------------------------
+      // Update
+      // --------------------------------------------------------
 
       await users.updateOne(
         {
@@ -960,9 +1158,9 @@ router.patch(
         },
       );
 
-      // ------------------------------------------------------
-      // Get updated user
-      // ------------------------------------------------------
+      // --------------------------------------------------------
+      // Retrieve updated user
+      // --------------------------------------------------------
 
       const updatedUser = await users.findOne(
         {
@@ -975,6 +1173,7 @@ router.patch(
 
       return res.status(200).json({
         success: true,
+        code: "user/status-updated",
         message: "User status updated successfully.",
         user: sanitizeUser(updatedUser),
       });
@@ -983,16 +1182,12 @@ router.patch(
 
       return res.status(500).json({
         success: false,
+        code: "user/status-update-failed",
         message: "Failed to update user status.",
       });
     }
   },
 );
-
-// ============================================================
-// DELETE /api/users/:id
-// ADMIN: DELETE USER
-// ============================================================
 
 router.delete(
   "/:id",
@@ -1005,22 +1200,23 @@ router.delete(
 
       const { id } = req.params;
 
-      // ------------------------------------------------------
-      // Validate ObjectId
-      // ------------------------------------------------------
+      // --------------------------------------------------------
+      // ObjectId
+      // --------------------------------------------------------
 
       if (!isValidObjectId(id)) {
         return res.status(400).json({
           success: false,
+          code: "validation/id-invalid",
           message: "Invalid user ID.",
         });
       }
 
       const objectId = new ObjectId(id);
 
-      // ------------------------------------------------------
-      // Find target user
-      // ------------------------------------------------------
+      // --------------------------------------------------------
+      // Target user
+      // --------------------------------------------------------
 
       const targetUser = await users.findOne({
         _id: objectId,
@@ -1029,24 +1225,26 @@ router.delete(
       if (!targetUser) {
         return res.status(404).json({
           success: false,
+          code: "user/not-found",
           message: "User not found.",
         });
       }
 
-      // ------------------------------------------------------
-      // Prevent admin from deleting own account
-      // ------------------------------------------------------
+      // --------------------------------------------------------
+      // Prevent self deletion
+      // --------------------------------------------------------
 
       if (targetUser.uid === req.user.uid) {
         return res.status(403).json({
           success: false,
+          code: "admin/self-delete",
           message: "You cannot delete your own account.",
         });
       }
 
-      // ------------------------------------------------------
+      // --------------------------------------------------------
       // Delete MongoDB user
-      // ------------------------------------------------------
+      // --------------------------------------------------------
 
       const result = await users.deleteOne({
         _id: objectId,
@@ -1055,12 +1253,14 @@ router.delete(
       if (result.deletedCount === 0) {
         return res.status(404).json({
           success: false,
+          code: "user/delete-failed",
           message: "User could not be deleted.",
         });
       }
 
       return res.status(200).json({
         success: true,
+        code: "user/deleted",
         message: "User deleted successfully.",
       });
     } catch (error) {
@@ -1068,6 +1268,7 @@ router.delete(
 
       return res.status(500).json({
         success: false,
+        code: "user/delete-failed",
         message: "Failed to delete user.",
       });
     }
@@ -1075,7 +1276,7 @@ router.delete(
 );
 
 // ============================================================
-// EXPORT ROUTER
+// EXPORT
 // ============================================================
 
 export default router;

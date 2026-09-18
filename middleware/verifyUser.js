@@ -1,10 +1,14 @@
 import { getCollections } from "../config/db.js";
 
+// ============================================================
+// VERIFY DATABASE USER
+// ============================================================
+
 const verifyUser = async (req, res, next) => {
   try {
-    // ========================================================
-    // 1. CHECK FIREBASE USER
-    // ========================================================
+    // --------------------------------------------------------
+    // 1. GET FIREBASE UID
+    // --------------------------------------------------------
 
     const uid = req.user?.uid;
 
@@ -20,15 +24,15 @@ const verifyUser = async (req, res, next) => {
 
     console.log("VERIFY USER - Firebase UID:", uid);
 
-    // ========================================================
-    // 2. GET COLLECTIONS
-    // ========================================================
+    // --------------------------------------------------------
+    // 2. GET MONGODB COLLECTIONS
+    // --------------------------------------------------------
 
     const { users } = getCollections();
 
-    // ========================================================
+    // --------------------------------------------------------
     // 3. CHECK USERS COLLECTION
-    // ========================================================
+    // --------------------------------------------------------
 
     if (!users) {
       console.error("VERIFY USER - Users collection is not initialized.");
@@ -42,9 +46,9 @@ const verifyUser = async (req, res, next) => {
 
     console.log("VERIFY USER - Users collection is available.");
 
-    // ========================================================
-    // 4. FIND USER
-    // ========================================================
+    // --------------------------------------------------------
+    // 4. FIND USER BY FIREBASE UID
+    // --------------------------------------------------------
 
     const user = await users.findOne(
       {
@@ -72,9 +76,9 @@ const verifyUser = async (req, res, next) => {
 
     console.log("VERIFY USER - MongoDB user found:", Boolean(user));
 
-    // ========================================================
+    // --------------------------------------------------------
     // 5. USER NOT FOUND
-    // ========================================================
+    // --------------------------------------------------------
 
     if (!user) {
       return res.status(404).json({
@@ -84,9 +88,9 @@ const verifyUser = async (req, res, next) => {
       });
     }
 
-    // ========================================================
-    // 6. CHECK STATUS
-    // ========================================================
+    // --------------------------------------------------------
+    // 6. CHECK USER STATUS
+    // --------------------------------------------------------
 
     if (user.status !== "active") {
       console.warn("VERIFY USER - User is not active:", {
@@ -101,11 +105,15 @@ const verifyUser = async (req, res, next) => {
       });
     }
 
-    // ========================================================
+    // --------------------------------------------------------
     // 7. ATTACH DATABASE USER
-    // ========================================================
+    // --------------------------------------------------------
 
     req.userData = user;
+
+    // --------------------------------------------------------
+    // 8. LOG SUCCESS
+    // --------------------------------------------------------
 
     console.log("VERIFY USER - User verification successful:", {
       uid: user.uid,
@@ -114,14 +122,18 @@ const verifyUser = async (req, res, next) => {
       status: user.status,
     });
 
+    // --------------------------------------------------------
+    // 9. CONTINUE
+    // --------------------------------------------------------
+
     return next();
   } catch (error) {
     console.error("USER VERIFICATION ERROR:", {
-      name: error?.name,
-      message: error?.message,
-      code: error?.code,
-      codeName: error?.codeName,
-      uid: req.user?.uid,
+      name: error?.name || "UnknownError",
+      message: error?.message || "Unknown error",
+      code: error?.code || "UNKNOWN",
+      codeName: error?.codeName || "UNKNOWN",
+      uid: req.user?.uid || "UID_MISSING",
     });
 
     return res.status(500).json({

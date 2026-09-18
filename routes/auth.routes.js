@@ -7,6 +7,10 @@ import { getCollections } from "../config/db.js";
 
 const router = express.Router();
 
+// ============================================================
+// CONSTANTS
+// ============================================================
+
 const MAX_NAME_LENGTH = 100;
 const MAX_PHONE_LENGTH = 11;
 const MAX_PHOTO_URL_LENGTH = 2000;
@@ -49,6 +53,15 @@ const PROFILE_FIELD_MAX_LENGTHS = {
   bio: MAX_BIO_LENGTH,
 };
 
+// ============================================================
+// USER PROJECTION
+// ============================================================
+//
+// Only return fields that the frontend actually needs.
+//
+// Sensitive/server-controlled fields are intentionally excluded.
+//
+
 const USER_PROJECTION = {
   _id: 1,
   uid: 1,
@@ -65,6 +78,10 @@ const USER_PROJECTION = {
   updatedAt: 1,
   lastLogin: 1,
 };
+
+// ============================================================
+// HELPERS
+// ============================================================
 
 const normalizeString = (value) => {
   return typeof value === "string" ? value.trim() : "";
@@ -183,15 +200,49 @@ const buildProfileUpdate = (profile) => {
   };
 };
 
+// ============================================================
+// REGISTER USER
+// ============================================================
+//
+// POST /api/auth/register
+//
+// Firebase Authentication must already be completed on the
+// frontend.
+//
+// Frontend sends:
+//
+// Authorization: Bearer <firebase-id-token>
+//
+// Body:
+//
+// {
+//   "name": "...",
+//   "phone": "..."
+// }
+//
+// Server controls:
+//
+// - uid
+// - email
+// - provider
+// - role
+// - status
+// - emailVerified
+// - timestamps
+//
+// User cannot submit their own role/status.
+//
+
 router.post("/register", verifyToken, async (req, res) => {
   try {
     const { users } = getCollections();
 
     if (!users) {
-      console.error("Users collection is not initialized.");
+      console.error("REGISTER - Users collection is not initialized.");
 
       return res.status(500).json({
         success: false,
+        code: "database/users-not-ready",
         message: "Database is not ready.",
       });
     }
@@ -205,6 +256,7 @@ router.post("/register", verifyToken, async (req, res) => {
     if (!firebaseUser?.uid) {
       return res.status(401).json({
         success: false,
+        code: "auth/uid-missing",
         message: "Invalid authentication token.",
       });
     }
@@ -224,6 +276,7 @@ router.post("/register", verifyToken, async (req, res) => {
     if (!email) {
       return res.status(400).json({
         success: false,
+        code: "auth/email-missing",
         message: "A valid Firebase email is required.",
       });
     }
@@ -235,6 +288,7 @@ router.post("/register", verifyToken, async (req, res) => {
     if (!name) {
       return res.status(400).json({
         success: false,
+        code: "validation/name-required",
         message: "Name is required.",
       });
     }
@@ -242,6 +296,7 @@ router.post("/register", verifyToken, async (req, res) => {
     if (name.length > MAX_NAME_LENGTH) {
       return res.status(400).json({
         success: false,
+        code: "validation/name-too-long",
         message: "Name must be 100 characters or less.",
       });
     }
@@ -253,6 +308,7 @@ router.post("/register", verifyToken, async (req, res) => {
     if (!phone) {
       return res.status(400).json({
         success: false,
+        code: "validation/phone-required",
         message: "Phone number is required.",
       });
     }
@@ -260,6 +316,7 @@ router.post("/register", verifyToken, async (req, res) => {
     if (phone.length !== MAX_PHONE_LENGTH) {
       return res.status(400).json({
         success: false,
+        code: "validation/phone-length",
         message: "Phone number must contain 11 digits.",
       });
     }
@@ -267,6 +324,7 @@ router.post("/register", verifyToken, async (req, res) => {
     if (!isValidBangladeshiPhone(phone)) {
       return res.status(400).json({
         success: false,
+        code: "validation/phone-invalid",
         message: "Enter a valid Bangladeshi phone number.",
       });
     }
@@ -282,17 +340,19 @@ router.post("/register", verifyToken, async (req, res) => {
     if (existingUser) {
       const now = new Date();
 
-      // Update login-related information.
+      // ------------------------------------------------------
+      // Update only login-related fields.
       //
-      // We intentionally DO NOT overwrite:
+      // DO NOT overwrite:
+      //
       // - role
       // - status
       // - profile
       // - phone
+      // - name
       // - manually edited photo
-      // - manually edited name
-      //
-      // This protects existing user data.
+      // ------------------------------------------------------
+
       await users.updateOne(
         { uid },
         {
@@ -308,6 +368,7 @@ router.post("/register", verifyToken, async (req, res) => {
 
       return res.status(200).json({
         success: true,
+        code: "user/already-exists",
         message: "User already exists.",
         user: currentUser,
       });
@@ -370,7 +431,7 @@ router.post("/register", verifyToken, async (req, res) => {
       emailVerified: firebaseUser.emailVerified === true,
 
       // ------------------------------------------------------
-      // Profile
+      // Default profile
       // ------------------------------------------------------
 
       profile: createDefaultProfile(),
@@ -391,9 +452,14 @@ router.post("/register", verifyToken, async (req, res) => {
     if (!result.insertedId) {
       return res.status(500).json({
         success: false,
+        code: "user/create-failed",
         message: "Failed to create user account.",
       });
     }
+
+    // --------------------------------------------------------
+    // Retrieve created user
+    // --------------------------------------------------------
 
     const createdUser = await users.findOne(
       {
@@ -407,32 +473,54 @@ router.post("/register", verifyToken, async (req, res) => {
     if (!createdUser) {
       return res.status(500).json({
         success: false,
+        code: "user/retrieve-failed",
         message: "User was created but could not be retrieved.",
       });
     }
 
     return res.status(201).json({
       success: true,
+      code: "user/created",
       message: "User registered successfully.",
       user: createdUser,
     });
   } catch (error) {
     console.error("POST /api/auth/register error:", error);
 
+    // --------------------------------------------------------
     // MongoDB duplicate key
+    // --------------------------------------------------------
+
     if (error?.code === 11000) {
       return res.status(409).json({
         success: false,
+        code: "user/already-exists",
         message: "User already exists.",
       });
     }
 
     return res.status(500).json({
       success: false,
+      code: "user/registration-failed",
       message: "Failed to register user.",
     });
   }
 });
+
+// ============================================================
+// GET CURRENT USER
+// ============================================================
+//
+// GET /api/auth/me
+//
+// Middleware order:
+//
+// verifyToken
+//      ↓
+// verifyUser
+//      ↓
+// route
+//
 
 router.get("/me", verifyToken, verifyUser, (req, res) => {
   return res.status(200).json({
@@ -441,15 +529,40 @@ router.get("/me", verifyToken, verifyUser, (req, res) => {
   });
 });
 
+// ============================================================
+// UPDATE CURRENT USER
+// ============================================================
+//
+// PATCH /api/auth/me
+//
+// Allowed:
+//
+// - name
+// - phone
+// - photo
+// - profile
+//
+// NOT allowed:
+//
+// - uid
+// - email
+// - role
+// - status
+// - provider
+// - emailVerified
+// - createdAt
+//
+
 router.patch("/me", verifyToken, verifyUser, async (req, res) => {
   try {
     const { users } = getCollections();
 
     if (!users) {
-      console.error("Users collection is not initialized.");
+      console.error("UPDATE PROFILE - Users collection is not initialized.");
 
       return res.status(500).json({
         success: false,
+        code: "database/users-not-ready",
         message: "Database is not ready.",
       });
     }
@@ -463,6 +576,7 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
     if (!uid) {
       return res.status(401).json({
         success: false,
+        code: "auth/uid-missing",
         message: "Invalid authentication token.",
       });
     }
@@ -485,6 +599,7 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       if (typeof name !== "string") {
         return res.status(400).json({
           success: false,
+          code: "validation/name-type",
           message: "Name must be a string.",
         });
       }
@@ -494,6 +609,7 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       if (!cleanName) {
         return res.status(400).json({
           success: false,
+          code: "validation/name-empty",
           message: "Name cannot be empty.",
         });
       }
@@ -501,6 +617,7 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       if (cleanName.length > MAX_NAME_LENGTH) {
         return res.status(400).json({
           success: false,
+          code: "validation/name-too-long",
           message: "Name must be 100 characters or less.",
         });
       }
@@ -516,6 +633,7 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       if (typeof phone !== "string") {
         return res.status(400).json({
           success: false,
+          code: "validation/phone-type",
           message: "Phone must be a string.",
         });
       }
@@ -525,6 +643,7 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       if (!cleanPhone) {
         return res.status(400).json({
           success: false,
+          code: "validation/phone-empty",
           message: "Phone number cannot be empty.",
         });
       }
@@ -532,6 +651,7 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       if (cleanPhone.length !== MAX_PHONE_LENGTH) {
         return res.status(400).json({
           success: false,
+          code: "validation/phone-length",
           message: "Phone number must contain 11 digits.",
         });
       }
@@ -539,6 +659,7 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       if (!isValidBangladeshiPhone(cleanPhone)) {
         return res.status(400).json({
           success: false,
+          code: "validation/phone-invalid",
           message: "Enter a valid Bangladeshi phone number.",
         });
       }
@@ -554,6 +675,7 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       if (typeof photo !== "string") {
         return res.status(400).json({
           success: false,
+          code: "validation/photo-type",
           message: "Photo must be a string.",
         });
       }
@@ -563,6 +685,7 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       if (cleanPhoto.length > MAX_PHOTO_URL_LENGTH) {
         return res.status(400).json({
           success: false,
+          code: "validation/photo-too-long",
           message: "Photo URL is too long.",
         });
       }
@@ -570,11 +693,12 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       if (cleanPhoto && !isValidHttpUrl(cleanPhoto)) {
         return res.status(400).json({
           success: false,
+          code: "validation/photo-invalid",
           message: "Please provide a valid photo URL.",
         });
       }
 
-      // Empty photo URL means remove photo.
+      // Empty photo URL removes photo.
       updateData.photo = cleanPhoto || null;
     }
 
@@ -588,6 +712,7 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
     if (profileError) {
       return res.status(400).json({
         success: false,
+        code: "validation/profile-invalid",
         message: profileError,
       });
     }
@@ -595,18 +720,13 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
     Object.assign(updateData, profileUpdate);
 
     // ========================================================
-    // CHECK FOR ACTUAL USER DATA
-    // ========================================================
-    //
-    // updatedAt is always present.
-    //
-    // Therefore if only updatedAt exists,
-    // there is no actual profile change.
+    // CHECK ACTUAL CHANGES
     // ========================================================
 
     if (Object.keys(updateData).length === 1) {
       return res.status(400).json({
         success: false,
+        code: "validation/no-data",
         message: "No valid profile data provided.",
       });
     }
@@ -629,6 +749,7 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
     if (result.matchedCount === 0) {
       return res.status(404).json({
         success: false,
+        code: "user/not-found",
         message: "User account not found.",
       });
     }
@@ -642,6 +763,7 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
     if (!updatedUser) {
       return res.status(404).json({
         success: false,
+        code: "user/not-found",
         message: "Updated user could not be found.",
       });
     }
@@ -652,26 +774,47 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
 
     return res.status(200).json({
       success: true,
+      code: "user/profile-updated",
       message: "Profile updated successfully.",
       user: updatedUser,
     });
   } catch (error) {
     console.error("PATCH /api/auth/me error:", error);
 
+    // --------------------------------------------------------
     // MongoDB duplicate key
+    // --------------------------------------------------------
+
     if (error?.code === 11000) {
       return res.status(409).json({
         success: false,
+        code: "user/duplicate-data",
         message: "The provided information already exists.",
       });
     }
 
     return res.status(500).json({
       success: false,
+      code: "user/profile-update-failed",
       message: "Failed to update profile.",
     });
   }
 });
+
+// ============================================================
+// LOGOUT
+// ============================================================
+//
+// POST /api/auth/logout
+//
+// IMPORTANT:
+//
+// Firebase logout itself must happen on the frontend:
+//
+// signOut(auth)
+//
+// This backend endpoint only records the user's activity.
+//
 
 router.post("/logout", verifyToken, async (req, res) => {
   try {
@@ -680,6 +823,7 @@ router.post("/logout", verifyToken, async (req, res) => {
     if (!users) {
       return res.status(500).json({
         success: false,
+        code: "database/users-not-ready",
         message: "Database is not ready.",
       });
     }
@@ -689,6 +833,7 @@ router.post("/logout", verifyToken, async (req, res) => {
     if (!uid) {
       return res.status(401).json({
         success: false,
+        code: "auth/uid-missing",
         message: "Invalid authentication token.",
       });
     }
@@ -705,12 +850,14 @@ router.post("/logout", verifyToken, async (req, res) => {
     if (result.matchedCount === 0) {
       return res.status(404).json({
         success: false,
+        code: "user/not-found",
         message: "User not found.",
       });
     }
 
     return res.status(200).json({
       success: true,
+      code: "auth/logout-success",
       message: "Logout successful.",
     });
   } catch (error) {
@@ -718,9 +865,14 @@ router.post("/logout", verifyToken, async (req, res) => {
 
     return res.status(500).json({
       success: false,
+      code: "auth/logout-failed",
       message: "Logout failed.",
     });
   }
 });
+
+// ============================================================
+// EXPORT ROUTER
+// ============================================================
 
 export default router;

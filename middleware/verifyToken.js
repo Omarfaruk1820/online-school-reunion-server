@@ -1,10 +1,52 @@
-import firebaseAuth  from "../middleware/verifyAdmin.js";
+import admin from "firebase-admin";
+
+// ============================================================
+// FIREBASE ADMIN INITIALIZATION
+// ============================================================
+
+if (!admin.apps.length) {
+  const projectId = process.env.FIREBASE_PROJECT_ID;
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+  const privateKey = process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, "\n");
+
+  if (!projectId) {
+    throw new Error("FIREBASE_PROJECT_ID is missing.");
+  }
+
+  if (!clientEmail) {
+    throw new Error("FIREBASE_CLIENT_EMAIL is missing.");
+  }
+
+  if (!privateKey) {
+    throw new Error("FIREBASE_PRIVATE_KEY is missing.");
+  }
+
+  admin.initializeApp({
+    credential: admin.credential.cert({
+      projectId,
+      clientEmail,
+      privateKey,
+    }),
+  });
+
+  console.log("Firebase Admin initialized successfully.");
+}
+
+// ============================================================
+// FIREBASE AUTH
+// ============================================================
+
+const firebaseAuth = admin.auth();
+
+// ============================================================
+// VERIFY FIREBASE ID TOKEN
+// ============================================================
 
 const verifyToken = async (req, res, next) => {
   try {
-    // ========================================================
-    // GET AUTHORIZATION HEADER
-    // ========================================================
+    // --------------------------------------------------------
+    // 1. GET AUTHORIZATION HEADER
+    // --------------------------------------------------------
 
     const authHeader = req.headers.authorization;
 
@@ -16,9 +58,9 @@ const verifyToken = async (req, res, next) => {
       });
     }
 
-    // ========================================================
-    // CHECK BEARER TOKEN
-    // ========================================================
+    // --------------------------------------------------------
+    // 2. CHECK BEARER FORMAT
+    // --------------------------------------------------------
 
     if (!authHeader.startsWith("Bearer ")) {
       return res.status(401).json({
@@ -27,6 +69,10 @@ const verifyToken = async (req, res, next) => {
         message: "Invalid authorization format.",
       });
     }
+
+    // --------------------------------------------------------
+    // 3. EXTRACT TOKEN
+    // --------------------------------------------------------
 
     const token = authHeader.substring(7).trim();
 
@@ -38,15 +84,11 @@ const verifyToken = async (req, res, next) => {
       });
     }
 
-    // ========================================================
-    // VERIFY FIREBASE TOKEN
-    // ========================================================
+    // --------------------------------------------------------
+    // 4. VERIFY FIREBASE ID TOKEN
+    // --------------------------------------------------------
 
     const decodedToken = await firebaseAuth.verifyIdToken(token);
-
-    // ========================================================
-    // CHECK UID
-    // ========================================================
 
     if (!decodedToken?.uid) {
       return res.status(401).json({
@@ -56,12 +98,28 @@ const verifyToken = async (req, res, next) => {
       });
     }
 
-    // ========================================================
-    // NORMALIZE FIREBASE USER
-    // ========================================================
+    // --------------------------------------------------------
+    // 5. DETECT FIREBASE SIGN-IN PROVIDER
+    // --------------------------------------------------------
 
-    const signInProvider =
+    const firebaseProvider =
       decodedToken?.firebase?.sign_in_provider || "password";
+
+    // --------------------------------------------------------
+    // 6. NORMALIZE PROVIDER
+    // --------------------------------------------------------
+
+    let provider = firebaseProvider;
+
+    if (firebaseProvider === "google.com") {
+      provider = "google";
+    } else if (firebaseProvider === "password") {
+      provider = "password";
+    }
+
+    // --------------------------------------------------------
+    // 7. CREATE NORMALIZED REQUEST USER
+    // --------------------------------------------------------
 
     req.user = {
       ...decodedToken,
@@ -79,8 +137,12 @@ const verifyToken = async (req, res, next) => {
 
       emailVerified: decodedToken.email_verified === true,
 
-      provider: signInProvider,
+      provider,
     };
+
+    // --------------------------------------------------------
+    // 8. LOG SUCCESS
+    // --------------------------------------------------------
 
     console.log("VERIFY TOKEN - Firebase token verified:", {
       uid: req.user.uid,
@@ -88,12 +150,17 @@ const verifyToken = async (req, res, next) => {
       provider: req.user.provider,
     });
 
+    // --------------------------------------------------------
+    // 9. CONTINUE
+    // --------------------------------------------------------
+
     return next();
   } catch (error) {
     console.error("VERIFY TOKEN ERROR:", {
-      name: error?.name,
-      message: error?.message,
-      code: error?.code,
+      name: error?.name || "UnknownError",
+      message: error?.message || "Unknown error",
+      code: error?.code || "UNKNOWN",
+      codeName: error?.codeName || "UNKNOWN",
     });
 
     return res.status(401).json({

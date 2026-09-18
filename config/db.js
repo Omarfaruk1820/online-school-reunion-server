@@ -38,6 +38,15 @@ const client = new MongoClient(uri, {
     strict: true,
     deprecationErrors: true,
   },
+
+  // Connection behavior
+  maxPoolSize: 10,
+  minPoolSize: 0,
+
+  // Timeout settings
+  serverSelectionTimeoutMS: 10000,
+  connectTimeoutMS: 10000,
+  socketTimeoutMS: 30000,
 });
 
 // ============================================================
@@ -98,9 +107,7 @@ async function ensureIndex(collection, key, options = {}) {
       );
 
       console.warn(`Existing index: ${existingIndex.name}`);
-
       console.warn(`Expected index: ${options.name}`);
-
       console.warn("Existing index will be reused.");
     }
 
@@ -149,21 +156,25 @@ async function connectDB() {
 
       await client.connect();
 
+      // ------------------------------------------------------
+      // Verify MongoDB connection
+      // ------------------------------------------------------
+
       await client.db("admin").command({
         ping: 1,
       });
 
       console.log("MongoDB ping successful.");
 
-      // --------------------------------------------------------
+      // ------------------------------------------------------
       // Select database
-      // --------------------------------------------------------
+      // ------------------------------------------------------
 
       db = client.db(dbName);
 
-      // --------------------------------------------------------
+      // ------------------------------------------------------
       // Initialize collections
-      // --------------------------------------------------------
+      // ------------------------------------------------------
 
       users = db.collection("users");
 
@@ -195,9 +206,9 @@ async function connectDB() {
 
       contactMessages = db.collection("contactMessages");
 
-      // ========================================================
+      // ======================================================
       // USERS INDEXES
-      // ========================================================
+      // ======================================================
 
       await ensureIndex(
         users,
@@ -216,9 +227,9 @@ async function connectDB() {
         },
       );
 
-      // ========================================================
+      // ======================================================
       // REGISTRATIONS INDEXES
-      // ========================================================
+      // ======================================================
 
       await ensureIndex(
         registrations,
@@ -254,9 +265,9 @@ async function connectDB() {
         },
       );
 
-      // ========================================================
+      // ======================================================
       // SUCCESS
-      // ========================================================
+      // ======================================================
 
       console.log(`MongoDB connected successfully. Database: ${dbName}`);
 
@@ -264,6 +275,10 @@ async function connectDB() {
 
       return db;
     } catch (error) {
+      // ------------------------------------------------------
+      // Reset connection state on failure
+      // ------------------------------------------------------
+
       db = null;
       connectionPromise = null;
 

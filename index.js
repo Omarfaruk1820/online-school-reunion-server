@@ -41,29 +41,28 @@ app.use(
   cors({
     origin: (origin, callback) => {
       // --------------------------------------------------------
-      // Allow requests without Origin header
+      // Requests without Origin
       // --------------------------------------------------------
 
       if (!origin) {
         return callback(null, true);
       }
 
-      const normalizedOrigin = origin.replace(/\/$/, "");
+      const normalizedOrigin = origin.trim().replace(/\/$/, "");
 
       // --------------------------------------------------------
-      // Allow configured frontend origins
+      // Configured frontend origin
       // --------------------------------------------------------
 
       if (clientUrls.includes(normalizedOrigin)) {
         return callback(null, true);
       }
 
-      console.warn("CORS blocked origin:", origin);
+      // --------------------------------------------------------
+      // Block unknown origin
+      // --------------------------------------------------------
 
-      // --------------------------------------------------------
-      // Do not throw an error for blocked origins.
-      // Simply don't allow the origin.
-      // --------------------------------------------------------
+      console.warn(`CORS blocked origin: ${origin}`);
 
       return callback(null, false);
     },
@@ -125,18 +124,17 @@ app.get("/api/health", (req, res) => {
 // DATABASE INITIALIZATION
 // ============================================================
 //
-// Every API request that reaches this middleware will make sure
-// MongoDB is connected.
+// All API routes below this middleware will use MongoDB.
 //
-// connectDB() is cached, so it does not create a new MongoDB
-// connection every time.
+// connectDB() is cached, so MongoDB is not reconnected for
+// every request.
 //
 
 app.use(async (req, res, next) => {
   try {
     await connectDB();
 
-    next();
+    return next();
   } catch (error) {
     console.error("Database initialization failed:", error?.message || error);
 
@@ -176,11 +174,13 @@ console.log("Registering registrations routes...");
 
 app.use(
   "/api/registrations",
+
   (req, res, next) => {
     console.log(`REGISTRATIONS REQUEST: ${req.method} ${req.originalUrl}`);
 
-    next();
+    return next();
   },
+
   registrationsRoutes,
 );
 
@@ -226,7 +226,7 @@ app.use((err, req, res, next) => {
   const statusCode = err.statusCode || err.status || 500;
 
   // ----------------------------------------------------------
-  // Hide internal errors in production
+  // Hide internal error details in production
   // ----------------------------------------------------------
 
   const message =
