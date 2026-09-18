@@ -9,6 +9,7 @@ import { connectDB } from "./config/db.js";
 import authRoutes from "./routes/auth.routes.js";
 import usersRoutes from "./routes/users.routes.js";
 import registrationsRoutes from "./routes/registrations.routes.js";
+import reunionEventsRoutes from "./routes/reunionEvents.routes.js";
 
 // ============================================================
 // EXPRESS APP
@@ -150,6 +151,10 @@ app.use(async (req, res, next) => {
 // AUTH ROUTES
 // ============================================================
 
+// ============================================================
+// AUTH ROUTES
+// ============================================================
+
 console.log("Registering auth routes...");
 
 app.use("/api/auth", authRoutes);
@@ -165,6 +170,26 @@ console.log("Registering users routes...");
 app.use("/api/users", usersRoutes);
 
 console.log("Users routes registered successfully.");
+
+// ============================================================
+// REUNION EVENT ROUTES
+// ============================================================
+
+console.log("Registering reunion events routes...");
+
+app.use(
+  "/api/reunion-events",
+
+  (req, res, next) => {
+    console.log(`REUNION EVENTS REQUEST: ${req.method} ${req.originalUrl}`);
+
+    return next();
+  },
+
+  reunionEventsRoutes,
+);
+
+console.log("Reunion events routes registered successfully.");
 
 // ============================================================
 // REGISTRATION ROUTES
