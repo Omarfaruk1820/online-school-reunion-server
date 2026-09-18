@@ -39,29 +39,57 @@ const normalizeString = (value) => {
   return value.trim();
 };
 
+// ------------------------------------------------------------
+// EMAIL
+// ------------------------------------------------------------
+
 const normalizeEmail = (value) => {
   return normalizeString(value).toLowerCase();
 };
+
+// ------------------------------------------------------------
+// CLASS
+// ------------------------------------------------------------
 
 const normalizeClassLevel = (value) => {
   return normalizeString(value);
 };
 
+// ------------------------------------------------------------
+// STUDENT TYPE
+// ------------------------------------------------------------
+
 const normalizeStudentType = (value) => {
   return normalizeString(value).toLowerCase();
 };
+
+// ------------------------------------------------------------
+// DEPARTMENT
+// ------------------------------------------------------------
 
 const normalizeDepartment = (value) => {
   return normalizeString(value).toLowerCase();
 };
 
+// ------------------------------------------------------------
+// T-SHIRT SIZE
+// ------------------------------------------------------------
+
 const normalizeTShirtSize = (value) => {
   return normalizeString(value).toUpperCase();
 };
 
+// ------------------------------------------------------------
+// PHONE
+// ------------------------------------------------------------
+
 const isValidPhone = (phone) => {
   return /^01[3-9]\d{8}$/.test(phone);
 };
+
+// ------------------------------------------------------------
+// BATCH YEAR
+// ------------------------------------------------------------
 
 const isValidBatchYear = (year) => {
   const numericYear = Number(year);
@@ -73,13 +101,25 @@ const isValidBatchYear = (year) => {
   );
 };
 
+// ------------------------------------------------------------
+// OBJECT ID
+// ------------------------------------------------------------
+
 const isValidObjectId = (value) => {
   return ObjectId.isValid(value);
 };
 
+// ------------------------------------------------------------
+// REGISTRATION ID
+// ------------------------------------------------------------
+
 const createRegistrationId = () => {
   return `SR-2027-${crypto.randomBytes(4).toString("hex").toUpperCase()}`;
 };
+
+// ------------------------------------------------------------
+// SERIALIZE MONGODB DOCUMENT
+// ------------------------------------------------------------
 
 const serializeDocument = (document) => {
   if (!document) {
@@ -92,15 +132,27 @@ const serializeDocument = (document) => {
   };
 };
 
+// ------------------------------------------------------------
+// AUTHENTICATED USER
+// ------------------------------------------------------------
+
 const getAuthenticatedUser = (req) => {
   return req.user || req.userData || null;
 };
+
+// ------------------------------------------------------------
+// AUTHENTICATED UID
+// ------------------------------------------------------------
 
 const getAuthenticatedUid = (req) => {
   const user = getAuthenticatedUser(req);
 
   return normalizeString(user?.uid);
 };
+
+// ------------------------------------------------------------
+// AUTHENTICATED EMAIL
+// ------------------------------------------------------------
 
 const getAuthenticatedEmail = (req) => {
   const user = getAuthenticatedUser(req);
@@ -122,7 +174,7 @@ router.get("/test", (req, res) => {
 });
 
 // ============================================================
-// GET ACTIVE REUNION
+// GET ACTIVE REUNION EVENT
 // GET /api/registrations
 // ============================================================
 
@@ -165,7 +217,7 @@ router.get("/", async (req, res) => {
       data: serializeDocument(event),
     });
   } catch (error) {
-    console.error("GET ACTIVE REUNION ERROR:", error);
+    console.error("GET ACTIVE REUNION EVENT ERROR:", error);
 
     return res.status(500).json({
       success: false,
@@ -176,15 +228,15 @@ router.get("/", async (req, res) => {
 });
 
 // ============================================================
-// POST REGISTRATION
+// REGISTER FOR REUNION
 // POST /api/registrations/register
 // ============================================================
 
 router.post("/register", verifyToken, async (req, res) => {
   try {
-    // ======================================================
+    // ========================================================
     // AUTHENTICATION
-    // ======================================================
+    // ========================================================
 
     const uid = getAuthenticatedUid(req);
     const authenticatedEmail = getAuthenticatedEmail(req);
@@ -201,13 +253,13 @@ router.post("/register", verifyToken, async (req, res) => {
       return res.status(401).json({
         success: false,
         code: "auth/email-required",
-        message: "A verified email address is required.",
+        message: "A valid authenticated email address is required.",
       });
     }
 
-    // ======================================================
+    // ========================================================
     // REQUEST BODY
-    // ======================================================
+    // ========================================================
 
     const {
       participant = {},
@@ -216,9 +268,9 @@ router.post("/register", verifyToken, async (req, res) => {
       consent = {},
     } = req.body || {};
 
-    // ======================================================
+    // ========================================================
     // PARTICIPANT
-    // ======================================================
+    // ========================================================
 
     const name = normalizeString(participant.name);
 
@@ -230,9 +282,9 @@ router.post("/register", verifyToken, async (req, res) => {
 
     const city = normalizeString(participant.city);
 
-    // ======================================================
+    // ========================================================
     // SCHOOL INFORMATION
-    // ======================================================
+    // ========================================================
 
     const studentType = normalizeStudentType(schoolInfo.studentType);
 
@@ -242,9 +294,9 @@ router.post("/register", verifyToken, async (req, res) => {
 
     const department = normalizeDepartment(schoolInfo.department);
 
-    // ======================================================
+    // ========================================================
     // REUNION INFORMATION
-    // ======================================================
+    // ========================================================
 
     const eventId = normalizeString(reunion.eventId);
 
@@ -254,9 +306,9 @@ router.post("/register", verifyToken, async (req, res) => {
 
     const agreedToRules = consent.agreedToRules === true;
 
-    // ======================================================
+    // ========================================================
     // PARTICIPANT VALIDATION
-    // ======================================================
+    // ========================================================
 
     if (name.length < 3 || name.length > 100) {
       return res.status(400).json({
@@ -291,6 +343,14 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
+    if (district.length > 100) {
+      return res.status(400).json({
+        success: false,
+        code: "validation/district",
+        message: "District cannot exceed 100 characters.",
+      });
+    }
+
     if (!city) {
       return res.status(400).json({
         success: false,
@@ -299,9 +359,17 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    // ======================================================
+    if (city.length > 100) {
+      return res.status(400).json({
+        success: false,
+        code: "validation/city",
+        message: "City cannot exceed 100 characters.",
+      });
+    }
+
+    // ========================================================
     // SCHOOL INFORMATION VALIDATION
-    // ======================================================
+    // ========================================================
 
     if (!VALID_STUDENT_TYPES.has(studentType)) {
       return res.status(400).json({
@@ -327,9 +395,9 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    // ======================================================
+    // ========================================================
     // DEPARTMENT
-    // ======================================================
+    // ========================================================
 
     const requiresDepartment = classLevel === "9" || classLevel === "10";
 
@@ -343,9 +411,9 @@ router.post("/register", verifyToken, async (req, res) => {
       }
     }
 
-    // ======================================================
+    // ========================================================
     // EVENT VALIDATION
-    // ======================================================
+    // ========================================================
 
     if (!eventId) {
       return res.status(400).json({
@@ -363,9 +431,9 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    // ======================================================
+    // ========================================================
     // PACKAGE VALIDATION
-    // ======================================================
+    // ========================================================
 
     if (!packageId) {
       return res.status(400).json({
@@ -374,6 +442,18 @@ router.post("/register", verifyToken, async (req, res) => {
         message: "Gift package ID is required.",
       });
     }
+
+    if (packageId.length > 100) {
+      return res.status(400).json({
+        success: false,
+        code: "validation/package-id",
+        message: "Package ID cannot exceed 100 characters.",
+      });
+    }
+
+    // ========================================================
+    // T-SHIRT VALIDATION
+    // ========================================================
 
     if (!tshirtSize) {
       return res.status(400).json({
@@ -391,9 +471,9 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    // ======================================================
+    // ========================================================
     // CONSENT
-    // ======================================================
+    // ========================================================
 
     if (!agreedToRules) {
       return res.status(400).json({
@@ -403,9 +483,9 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    // ======================================================
+    // ========================================================
     // DATABASE
-    // ======================================================
+    // ========================================================
 
     await connectDB();
 
@@ -413,14 +493,22 @@ router.post("/register", verifyToken, async (req, res) => {
       users,
       reunionEvents,
       giftPackages,
-      reunionRegistrations,
+      registrations,
       studentProfiles,
       alumniProfiles,
     } = getCollections();
 
-    // ======================================================
-    // FIND EVENT
-    // ======================================================
+    if (!registrations) {
+      return res.status(500).json({
+        success: false,
+        code: "database/collection-not-found",
+        message: "Registrations collection is unavailable.",
+      });
+    }
+
+    // ========================================================
+    // EVENT
+    // ========================================================
 
     const eventObjectId = new ObjectId(eventId);
 
@@ -436,9 +524,9 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    // ======================================================
-    // REGISTRATION STATUS
-    // ======================================================
+    // ========================================================
+    // REGISTRATION OPEN
+    // ========================================================
 
     if (event.registrationOpen !== true) {
       return res.status(403).json({
@@ -448,9 +536,9 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    // ======================================================
+    // ========================================================
     // REGISTRATION DEADLINE
-    // ======================================================
+    // ========================================================
 
     if (event.registrationDeadline) {
       const deadline = new Date(event.registrationDeadline);
@@ -464,9 +552,9 @@ router.post("/register", verifyToken, async (req, res) => {
       }
     }
 
-    // ======================================================
+    // ========================================================
     // FIND GIFT PACKAGE
-    // ======================================================
+    // ========================================================
 
     let packageQuery;
 
@@ -499,7 +587,6 @@ router.post("/register", verifyToken, async (req, res) => {
 
     const giftPackage = await giftPackages.findOne({
       ...packageQuery,
-
       active: {
         $ne: false,
       },
@@ -513,13 +600,12 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    // ======================================================
-    // DUPLICATE REGISTRATION
-    // ======================================================
+    // ========================================================
+    // DUPLICATE REGISTRATION CHECK
+    // ========================================================
 
-    const existingRegistration = await reunionRegistrations.findOne({
+    const existingRegistration = await registrations.findOne({
       uid,
-
       "reunion.eventId": eventObjectId,
     });
 
@@ -528,7 +614,6 @@ router.post("/register", verifyToken, async (req, res) => {
         success: false,
         code: "reunion/already-registered",
         message: "You are already registered for this reunion.",
-
         data: {
           registrationId: existingRegistration.registrationId || null,
 
@@ -539,53 +624,51 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    // ======================================================
+    // ========================================================
     // CURRENT TIME
-    // ======================================================
+    // ========================================================
 
     const now = new Date();
 
-    // ======================================================
-    // UPSERT USER
-    // ======================================================
+    // ========================================================
+    // UPDATE USER
+    // ========================================================
 
-    await users.updateOne(
-      {
-        uid,
-      },
+    /*
+     * The user should normally already exist because
+     * Firebase authentication creates/synchronizes
+     * the user before reunion registration.
+     *
+     * We update only reunion-related basic information.
+     */
 
-      {
-        $set: {
-          email: authenticatedEmail,
-          name,
-          phone,
-          district,
-          city,
-          updatedAt: now,
-        },
-
-        $setOnInsert: {
+    if (users) {
+      await users.updateOne(
+        {
           uid,
-          role: "student",
-          status: "active",
-          createdAt: now,
         },
-      },
+        {
+          $set: {
+            email: authenticatedEmail,
+            name,
+            phone,
+            district,
+            city,
+            updatedAt: now,
+          },
+        },
+      );
+    }
 
-      {
-        upsert: true,
-      },
-    );
-
-    // ======================================================
+    // ========================================================
     // REGISTRATION ID
-    // ======================================================
+    // ========================================================
 
     const registrationId = createRegistrationId();
 
-    // ======================================================
+    // ========================================================
     // REGISTRATION DOCUMENT
-    // ======================================================
+    // ========================================================
 
     const registrationDocument = {
       registrationId,
@@ -604,6 +687,7 @@ router.post("/register", verifyToken, async (req, res) => {
         studentType,
         classLevel,
         batchYear,
+
         department: requiresDepartment ? department : null,
       },
 
@@ -613,6 +697,8 @@ router.post("/register", verifyToken, async (req, res) => {
         packageId,
 
         packageDatabaseId: giftPackage._id?.toString() || null,
+
+        packageName: giftPackage.name || giftPackage.title || null,
 
         tShirt: {
           size: tshirtSize,
@@ -630,24 +716,26 @@ router.post("/register", verifyToken, async (req, res) => {
         event.paymentRequired === true ? "pending" : "not-required",
 
       createdAt: now,
+
       updatedAt: now,
     };
 
-    // ======================================================
+    // ========================================================
     // INSERT REGISTRATION
-    // ======================================================
+    // ========================================================
 
     let registrationResult;
 
     try {
-      registrationResult =
-        await reunionRegistrations.insertOne(registrationDocument);
+      registrationResult = await registrations.insertOne(registrationDocument);
     } catch (error) {
-      // Duplicate key race condition
-      if (error?.code === 11000) {
-        const duplicateRegistration = await reunionRegistrations.findOne({
-          uid,
+      // ------------------------------------------------------
+      // DUPLICATE KEY
+      // ------------------------------------------------------
 
+      if (error?.code === 11000) {
+        const duplicateRegistration = await registrations.findOne({
+          uid,
           "reunion.eventId": eventObjectId,
         });
 
@@ -658,6 +746,10 @@ router.post("/register", verifyToken, async (req, res) => {
 
           data: {
             registrationId: duplicateRegistration?.registrationId || null,
+
+            databaseId: duplicateRegistration?._id?.toString() || null,
+
+            status: duplicateRegistration?.status || "confirmed",
           },
         });
       }
@@ -665,18 +757,25 @@ router.post("/register", verifyToken, async (req, res) => {
       throw error;
     }
 
-    // ======================================================
+    // ========================================================
     // PROFILE DATA
-    // ======================================================
+    // ========================================================
 
     const profileData = {
       uid,
+
       name,
+
       email: authenticatedEmail,
+
       phone,
+
       district,
+
       city,
+
       classLevel,
+
       batchYear,
 
       department: requiresDepartment ? department : null,
@@ -684,59 +783,59 @@ router.post("/register", verifyToken, async (req, res) => {
       updatedAt: now,
     };
 
-    // ======================================================
-    // STUDENT PROFILE
-    // ======================================================
+    // ========================================================
+    // CURRENT STUDENT PROFILE
+    // ========================================================
 
     if (studentType === "current") {
-      await studentProfiles.updateOne(
-        {
-          uid,
-        },
-
-        {
-          $set: profileData,
-
-          $setOnInsert: {
+      if (studentProfiles) {
+        await studentProfiles.updateOne(
+          {
             uid,
-            createdAt: now,
           },
-        },
+          {
+            $set: profileData,
 
-        {
-          upsert: true,
-        },
-      );
+            $setOnInsert: {
+              uid,
+              createdAt: now,
+            },
+          },
+          {
+            upsert: true,
+          },
+        );
+      }
     }
 
-    // ======================================================
+    // ========================================================
     // ALUMNI PROFILE
-    // ======================================================
+    // ========================================================
 
     if (studentType === "alumni") {
-      await alumniProfiles.updateOne(
-        {
-          uid,
-        },
-
-        {
-          $set: profileData,
-
-          $setOnInsert: {
+      if (alumniProfiles) {
+        await alumniProfiles.updateOne(
+          {
             uid,
-            createdAt: now,
           },
-        },
+          {
+            $set: profileData,
 
-        {
-          upsert: true,
-        },
-      );
+            $setOnInsert: {
+              uid,
+              createdAt: now,
+            },
+          },
+          {
+            upsert: true,
+          },
+        );
+      }
     }
 
-    // ======================================================
+    // ========================================================
     // SUCCESS
-    // ======================================================
+    // ========================================================
 
     return res.status(201).json({
       success: true,
@@ -773,6 +872,10 @@ router.post("/register", verifyToken, async (req, res) => {
 
 router.get("/my-registration", verifyToken, async (req, res) => {
   try {
+    // ======================================================
+    // AUTHENTICATION
+    // ======================================================
+
     const uid = getAuthenticatedUid(req);
 
     if (!uid) {
@@ -783,15 +886,30 @@ router.get("/my-registration", verifyToken, async (req, res) => {
       });
     }
 
+    // ======================================================
+    // DATABASE
+    // ======================================================
+
     await connectDB();
 
-    const { reunionRegistrations, reunionEvents } = getCollections();
+    const { registrations, reunionEvents } = getCollections();
 
-    const registration = await reunionRegistrations.findOne(
+    if (!registrations) {
+      return res.status(500).json({
+        success: false,
+        code: "database/collection-not-found",
+        message: "Registrations collection is unavailable.",
+      });
+    }
+
+    // ======================================================
+    // FIND USER REGISTRATION
+    // ======================================================
+
+    const registration = await registrations.findOne(
       {
         uid,
       },
-
       {
         sort: {
           createdAt: -1,
@@ -807,6 +925,10 @@ router.get("/my-registration", verifyToken, async (req, res) => {
       });
     }
 
+    // ======================================================
+    // FIND EVENT
+    // ======================================================
+
     let event = null;
 
     const registrationEventId = registration.reunion?.eventId;
@@ -816,6 +938,10 @@ router.get("/my-registration", verifyToken, async (req, res) => {
         _id: new ObjectId(registrationEventId),
       });
     }
+
+    // ======================================================
+    // SUCCESS
+    // ======================================================
 
     return res.status(200).json({
       success: true,
@@ -833,6 +959,80 @@ router.get("/my-registration", verifyToken, async (req, res) => {
       success: false,
       code: "reunion/my-registration-load-failed",
       message: "Failed to load your reunion registration.",
+    });
+  }
+});
+
+// ============================================================
+// GET MY REGISTRATION BY ID
+// GET /api/registrations/:registrationId
+// ============================================================
+
+router.get("/:registrationId", verifyToken, async (req, res) => {
+  try {
+    const uid = getAuthenticatedUid(req);
+
+    if (!uid) {
+      return res.status(401).json({
+        success: false,
+        code: "auth/unauthorized",
+        message: "Authentication is required.",
+      });
+    }
+
+    const registrationId = normalizeString(req.params.registrationId);
+
+    if (!registrationId) {
+      return res.status(400).json({
+        success: false,
+        code: "validation/registration-id",
+        message: "Registration ID is required.",
+      });
+    }
+
+    await connectDB();
+
+    const { registrations, reunionEvents } = getCollections();
+
+    const registration = await registrations.findOne({
+      registrationId,
+      uid,
+    });
+
+    if (!registration) {
+      return res.status(404).json({
+        success: false,
+        code: "reunion/registration-not-found",
+        message: "Registration was not found.",
+      });
+    }
+
+    let event = null;
+
+    const eventId = registration.reunion?.eventId;
+
+    if (eventId && ObjectId.isValid(eventId)) {
+      event = await reunionEvents.findOne({
+        _id: new ObjectId(eventId),
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+
+      data: {
+        registration: serializeDocument(registration),
+
+        event: serializeDocument(event),
+      },
+    });
+  } catch (error) {
+    console.error("GET REGISTRATION BY ID ERROR:", error);
+
+    return res.status(500).json({
+      success: false,
+      code: "reunion/registration-load-failed",
+      message: "Failed to load registration.",
     });
   }
 });
