@@ -7,9 +7,9 @@ import verifyAdmin from "../middleware/verifyAdmin.js";
 
 const router = express.Router();
 
-// ============================================================
-// CONSTANTS
-// ============================================================
+/* ============================================================
+   CONSTANTS
+============================================================ */
 
 const MAX_TITLE_LENGTH = 150;
 const MAX_SHORT_TITLE_LENGTH = 100;
@@ -19,9 +19,9 @@ const MAX_DESCRIPTION_LENGTH = 5000;
 
 const TIME_REGEX = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
-// ============================================================
-// HELPER FUNCTIONS
-// ============================================================
+/* ============================================================
+   HELPERS
+============================================================ */
 
 const normalizeString = (value) => {
   if (typeof value !== "string") {
@@ -29,6 +29,10 @@ const normalizeString = (value) => {
   }
 
   return value.trim();
+};
+
+const normalizeEmail = (value) => {
+  return normalizeString(value).toLowerCase();
 };
 
 const normalizeDate = (value) => {
@@ -60,17 +64,37 @@ const serializeDocument = (document) => {
   };
 };
 
+const getAuthenticatedUser = (req) => {
+  return req.user || req.userData || null;
+};
+
 const getAuthenticatedUid = (req) => {
-  return normalizeString(req.user?.uid || req.userData?.uid);
+  const user = getAuthenticatedUser(req);
+
+  return normalizeString(user?.uid);
 };
 
 const getAuthenticatedEmail = (req) => {
-  return normalizeString(req.user?.email || req.userData?.email).toLowerCase();
+  const user = getAuthenticatedUser(req);
+
+  return normalizeEmail(user?.email);
 };
 
-// ============================================================
-// EVENT VALIDATION
-// ============================================================
+const isValidTime = (value) => {
+  return TIME_REGEX.test(value);
+};
+
+const isTimeRangeValid = (startTime, endTime) => {
+  if (!isValidTime(startTime) || !isValidTime(endTime)) {
+    return false;
+  }
+
+  return startTime < endTime;
+};
+
+/* ============================================================
+   EVENT PAYLOAD VALIDATION
+============================================================ */
 
 const validateEventPayload = ({
   title,
@@ -85,9 +109,9 @@ const validateEventPayload = ({
 }) => {
   const errors = {};
 
-  // ----------------------------------------------------------
-  // TITLE
-  // ----------------------------------------------------------
+  /* ----------------------------------------------------------
+     TITLE
+  ---------------------------------------------------------- */
 
   if (!title) {
     errors.title = "Event title is required.";
@@ -95,67 +119,67 @@ const validateEventPayload = ({
     errors.title = `Event title cannot exceed ${MAX_TITLE_LENGTH} characters.`;
   }
 
-  // ----------------------------------------------------------
-  // SHORT TITLE
-  // ----------------------------------------------------------
+  /* ----------------------------------------------------------
+     SHORT TITLE
+  ---------------------------------------------------------- */
 
   if (shortTitle && shortTitle.length > MAX_SHORT_TITLE_LENGTH) {
     errors.shortTitle = `Short title cannot exceed ${MAX_SHORT_TITLE_LENGTH} characters.`;
   }
 
-  // ----------------------------------------------------------
-  // EDITION
-  // ----------------------------------------------------------
+  /* ----------------------------------------------------------
+     EDITION
+  ---------------------------------------------------------- */
 
   if (edition && edition.length > MAX_EDITION_LENGTH) {
     errors.edition = `Edition cannot exceed ${MAX_EDITION_LENGTH} characters.`;
   }
 
-  // ----------------------------------------------------------
-  // EVENT DATE
-  // ----------------------------------------------------------
+  /* ----------------------------------------------------------
+     EVENT DATE
+  ---------------------------------------------------------- */
 
   if (!eventDate) {
     errors.eventDate = "Event date is required.";
   }
 
-  // ----------------------------------------------------------
-  // START TIME
-  // ----------------------------------------------------------
+  /* ----------------------------------------------------------
+     START TIME
+  ---------------------------------------------------------- */
 
   if (!startTime) {
     errors.startTime = "Start time is required.";
-  } else if (!TIME_REGEX.test(startTime)) {
+  } else if (!isValidTime(startTime)) {
     errors.startTime = "Start time must use HH:mm format.";
   }
 
-  // ----------------------------------------------------------
-  // END TIME
-  // ----------------------------------------------------------
+  /* ----------------------------------------------------------
+     END TIME
+  ---------------------------------------------------------- */
 
   if (!endTime) {
     errors.endTime = "End time is required.";
-  } else if (!TIME_REGEX.test(endTime)) {
+  } else if (!isValidTime(endTime)) {
     errors.endTime = "End time must use HH:mm format.";
   }
 
-  // ----------------------------------------------------------
-  // TIME RANGE
-  // ----------------------------------------------------------
+  /* ----------------------------------------------------------
+     TIME RANGE
+  ---------------------------------------------------------- */
 
   if (
     startTime &&
     endTime &&
-    TIME_REGEX.test(startTime) &&
-    TIME_REGEX.test(endTime) &&
+    isValidTime(startTime) &&
+    isValidTime(endTime) &&
     startTime >= endTime
   ) {
     errors.endTime = "End time must be later than start time.";
   }
 
-  // ----------------------------------------------------------
-  // VENUE
-  // ----------------------------------------------------------
+  /* ----------------------------------------------------------
+     VENUE
+  ---------------------------------------------------------- */
 
   if (!venue) {
     errors.venue = "Venue is required.";
@@ -163,22 +187,22 @@ const validateEventPayload = ({
     errors.venue = `Venue cannot exceed ${MAX_VENUE_LENGTH} characters.`;
   }
 
-  // ----------------------------------------------------------
-  // REGISTRATION DEADLINE
-  // ----------------------------------------------------------
+  /* ----------------------------------------------------------
+     REGISTRATION DEADLINE
+  ---------------------------------------------------------- */
 
   if (registrationDeadline) {
-    const deadline = new Date(registrationDeadline);
+    const deadline = normalizeDate(registrationDeadline);
 
-    if (Number.isNaN(deadline.getTime())) {
+    if (!deadline) {
       errors.registrationDeadline =
         "Registration deadline must be a valid date.";
     }
   }
 
-  // ----------------------------------------------------------
-  // DESCRIPTION
-  // ----------------------------------------------------------
+  /* ----------------------------------------------------------
+     DESCRIPTION
+  ---------------------------------------------------------- */
 
   if (description && description.length > MAX_DESCRIPTION_LENGTH) {
     errors.description = `Description cannot exceed ${MAX_DESCRIPTION_LENGTH} characters.`;
@@ -187,10 +211,10 @@ const validateEventPayload = ({
   return errors;
 };
 
-// ============================================================
-// ROUTE TEST
-// GET /api/reunion-events/test
-// ============================================================
+/* ============================================================
+   ROUTE TEST
+   GET /api/reunion-events/test
+============================================================ */
 
 router.get("/test", (req, res) => {
   return res.status(200).json({
@@ -200,10 +224,10 @@ router.get("/test", (req, res) => {
   });
 });
 
-// ============================================================
-// GET ACTIVE REUNION EVENT
-// GET /api/reunion-events/active
-// ============================================================
+/* ============================================================
+   GET ACTIVE EVENT
+   GET /api/reunion-events/active
+============================================================ */
 
 router.get("/active", async (req, res) => {
   try {
@@ -249,15 +273,15 @@ router.get("/active", async (req, res) => {
     return res.status(500).json({
       success: false,
       code: "reunion/event-load-failed",
-      message: "Failed to load reunion event.",
+      message: "Failed to load active reunion event.",
     });
   }
 });
 
-// ============================================================
-// GET ALL REUNION EVENTS
-// GET /api/reunion-events
-// ============================================================
+/* ============================================================
+   GET ALL EVENTS
+   GET /api/reunion-events
+============================================================ */
 
 router.get("/", async (req, res) => {
   try {
@@ -297,10 +321,13 @@ router.get("/", async (req, res) => {
   }
 });
 
-// ============================================================
-// GET REUNION EVENT BY ID
-// GET /api/reunion-events/:eventId
-// ============================================================
+/* ============================================================
+   GET EVENT BY ID
+   GET /api/reunion-events/:eventId
+
+   IMPORTANT:
+   This must stay AFTER /active.
+============================================================ */
 
 router.get("/:eventId", async (req, res) => {
   try {
@@ -353,11 +380,11 @@ router.get("/:eventId", async (req, res) => {
   }
 });
 
-// ============================================================
-// CREATE REUNION EVENT
-// POST /api/reunion-events
-// ADMIN ONLY
-// ============================================================
+/* ============================================================
+   CREATE EVENT
+   POST /api/reunion-events
+   ADMIN ONLY
+============================================================ */
 
 router.post("/", verifyToken, verifyAdmin, async (req, res) => {
   try {
@@ -393,7 +420,10 @@ router.post("/", verifyToken, verifyAdmin, async (req, res) => {
     const normalizedDescription = normalizeString(description);
 
     const normalizedEventDate = normalizeDate(eventDate);
-    const normalizedRegistrationDeadline = normalizeDate(registrationDeadline);
+
+    const normalizedRegistrationDeadline = registrationDeadline
+      ? normalizeDate(registrationDeadline)
+      : null;
 
     const normalizedStartTime = normalizeString(startTime);
     const normalizedEndTime = normalizeString(endTime);
@@ -404,9 +434,9 @@ router.post("/", verifyToken, verifyAdmin, async (req, res) => {
     const normalizedPaymentRequired =
       typeof paymentRequired === "boolean" ? paymentRequired : false;
 
-    // --------------------------------------------------------
-    // VALIDATION
-    // --------------------------------------------------------
+    /* ----------------------------------------------------------
+       VALIDATION
+    ---------------------------------------------------------- */
 
     const validationErrors = validateEventPayload({
       title: normalizedTitle,
@@ -429,9 +459,9 @@ router.post("/", verifyToken, verifyAdmin, async (req, res) => {
       });
     }
 
-    // --------------------------------------------------------
-    // DATABASE
-    // --------------------------------------------------------
+    /* ----------------------------------------------------------
+       DATABASE
+    ---------------------------------------------------------- */
 
     await connectDB();
 
@@ -445,9 +475,9 @@ router.post("/", verifyToken, verifyAdmin, async (req, res) => {
       });
     }
 
-    // --------------------------------------------------------
-    // ONLY ONE ACTIVE EVENT
-    // --------------------------------------------------------
+    /* ----------------------------------------------------------
+       ONE ACTIVE EVENT ONLY
+    ---------------------------------------------------------- */
 
     if (normalizedRegistrationOpen) {
       const existingActiveEvent = await reunionEvents.findOne({
@@ -461,15 +491,32 @@ router.post("/", verifyToken, verifyAdmin, async (req, res) => {
           message: "Another reunion event is already open for registration.",
           data: {
             eventId: existingActiveEvent._id?.toString() || null,
+
             title: existingActiveEvent.title || null,
           },
         });
       }
     }
 
-    // --------------------------------------------------------
-    // CREATE DOCUMENT
-    // --------------------------------------------------------
+    /* ----------------------------------------------------------
+       REGISTRATION DEADLINE MUST NOT BE AFTER EVENT
+    ---------------------------------------------------------- */
+
+    if (
+      normalizedRegistrationDeadline &&
+      normalizedEventDate &&
+      normalizedRegistrationDeadline > normalizedEventDate
+    ) {
+      return res.status(400).json({
+        success: false,
+        code: "validation/registration-deadline",
+        message: "Registration deadline cannot be later than the event date.",
+      });
+    }
+
+    /* ----------------------------------------------------------
+       CREATE DOCUMENT
+    ---------------------------------------------------------- */
 
     const now = new Date();
 
@@ -510,8 +557,10 @@ router.post("/", verifyToken, verifyAdmin, async (req, res) => {
     return res.status(201).json({
       success: true,
       message: "Reunion event created successfully.",
+
       data: {
         ...serializeDocument(eventDocument),
+
         _id: result.insertedId.toString(),
       },
     });
@@ -526,11 +575,11 @@ router.post("/", verifyToken, verifyAdmin, async (req, res) => {
   }
 });
 
-// ============================================================
-// UPDATE REUNION EVENT
-// PATCH /api/reunion-events/:eventId
-// ADMIN ONLY
-// ============================================================
+/* ============================================================
+   UPDATE EVENT
+   PATCH /api/reunion-events/:eventId
+   ADMIN ONLY
+============================================================ */
 
 router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
   try {
@@ -583,9 +632,9 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
     const body = req.body || {};
     const update = {};
 
-    // --------------------------------------------------------
-    // TITLE
-    // --------------------------------------------------------
+    /* --------------------------------------------------------
+         TITLE
+      -------------------------------------------------------- */
 
     if (body.title !== undefined) {
       const title = normalizeString(body.title);
@@ -609,9 +658,9 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
       update.title = title;
     }
 
-    // --------------------------------------------------------
-    // SHORT TITLE
-    // --------------------------------------------------------
+    /* --------------------------------------------------------
+         SHORT TITLE
+      -------------------------------------------------------- */
 
     if (body.shortTitle !== undefined) {
       const shortTitle = normalizeString(body.shortTitle);
@@ -627,9 +676,9 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
       update.shortTitle = shortTitle || null;
     }
 
-    // --------------------------------------------------------
-    // EDITION
-    // --------------------------------------------------------
+    /* --------------------------------------------------------
+         EDITION
+      -------------------------------------------------------- */
 
     if (body.edition !== undefined) {
       const edition = normalizeString(body.edition);
@@ -645,9 +694,9 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
       update.edition = edition || null;
     }
 
-    // --------------------------------------------------------
-    // EVENT DATE
-    // --------------------------------------------------------
+    /* --------------------------------------------------------
+         EVENT DATE
+      -------------------------------------------------------- */
 
     if (body.eventDate !== undefined) {
       const eventDate = normalizeDate(body.eventDate);
@@ -663,14 +712,14 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
       update.eventDate = eventDate;
     }
 
-    // --------------------------------------------------------
-    // START TIME
-    // --------------------------------------------------------
+    /* --------------------------------------------------------
+         START TIME
+      -------------------------------------------------------- */
 
     if (body.startTime !== undefined) {
       const startTime = normalizeString(body.startTime);
 
-      if (!TIME_REGEX.test(startTime)) {
+      if (!isValidTime(startTime)) {
         return res.status(400).json({
           success: false,
           code: "validation/start-time",
@@ -681,14 +730,14 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
       update.startTime = startTime;
     }
 
-    // --------------------------------------------------------
-    // END TIME
-    // --------------------------------------------------------
+    /* --------------------------------------------------------
+         END TIME
+      -------------------------------------------------------- */
 
     if (body.endTime !== undefined) {
       const endTime = normalizeString(body.endTime);
 
-      if (!TIME_REGEX.test(endTime)) {
+      if (!isValidTime(endTime)) {
         return res.status(400).json({
           success: false,
           code: "validation/end-time",
@@ -699,9 +748,9 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
       update.endTime = endTime;
     }
 
-    // --------------------------------------------------------
-    // TIME RANGE
-    // --------------------------------------------------------
+    /* --------------------------------------------------------
+         FINAL TIME VALIDATION
+      -------------------------------------------------------- */
 
     const finalStartTime = update.startTime ?? existingEvent.startTime;
 
@@ -710,8 +759,8 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
     if (
       finalStartTime &&
       finalEndTime &&
-      TIME_REGEX.test(finalStartTime) &&
-      TIME_REGEX.test(finalEndTime) &&
+      isValidTime(finalStartTime) &&
+      isValidTime(finalEndTime) &&
       finalStartTime >= finalEndTime
     ) {
       return res.status(400).json({
@@ -721,9 +770,9 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
       });
     }
 
-    // --------------------------------------------------------
-    // VENUE
-    // --------------------------------------------------------
+    /* --------------------------------------------------------
+         VENUE
+      -------------------------------------------------------- */
 
     if (body.venue !== undefined) {
       const venue = normalizeString(body.venue);
@@ -747,9 +796,9 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
       update.venue = venue;
     }
 
-    // --------------------------------------------------------
-    // REGISTRATION DEADLINE
-    // --------------------------------------------------------
+    /* --------------------------------------------------------
+         REGISTRATION DEADLINE
+      -------------------------------------------------------- */
 
     if (body.registrationDeadline !== undefined) {
       if (
@@ -772,9 +821,9 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
       }
     }
 
-    // --------------------------------------------------------
-    // PAYMENT REQUIRED
-    // --------------------------------------------------------
+    /* --------------------------------------------------------
+         PAYMENT REQUIRED
+      -------------------------------------------------------- */
 
     if (body.paymentRequired !== undefined) {
       if (typeof body.paymentRequired !== "boolean") {
@@ -788,9 +837,9 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
       update.paymentRequired = body.paymentRequired;
     }
 
-    // --------------------------------------------------------
-    // DESCRIPTION
-    // --------------------------------------------------------
+    /* --------------------------------------------------------
+         DESCRIPTION
+      -------------------------------------------------------- */
 
     if (body.description !== undefined) {
       const description = normalizeString(body.description);
@@ -806,9 +855,9 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
       update.description = description || null;
     }
 
-    // --------------------------------------------------------
-    // REGISTRATION OPEN
-    // --------------------------------------------------------
+    /* --------------------------------------------------------
+         REGISTRATION OPEN
+      -------------------------------------------------------- */
 
     if (body.registrationOpen !== undefined) {
       if (typeof body.registrationOpen !== "boolean") {
@@ -824,6 +873,7 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
           _id: {
             $ne: objectId,
           },
+
           registrationOpen: true,
         });
 
@@ -834,6 +884,7 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
             message: "Another reunion event is already open for registration.",
             data: {
               eventId: anotherActiveEvent._id?.toString() || null,
+
               title: anotherActiveEvent.title || null,
             },
           });
@@ -843,9 +894,32 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
       update.registrationOpen = body.registrationOpen;
     }
 
-    // --------------------------------------------------------
-    // NOTHING TO UPDATE
-    // --------------------------------------------------------
+    /* --------------------------------------------------------
+         FINAL DATE / DEADLINE VALIDATION
+      -------------------------------------------------------- */
+
+    const finalEventDate = update.eventDate ?? existingEvent.eventDate;
+
+    const finalDeadline =
+      update.registrationDeadline !== undefined
+        ? update.registrationDeadline
+        : existingEvent.registrationDeadline;
+
+    if (
+      finalDeadline &&
+      finalEventDate &&
+      new Date(finalDeadline) > new Date(finalEventDate)
+    ) {
+      return res.status(400).json({
+        success: false,
+        code: "validation/registration-deadline",
+        message: "Registration deadline cannot be later than the event date.",
+      });
+    }
+
+    /* --------------------------------------------------------
+         NOTHING TO UPDATE
+      -------------------------------------------------------- */
 
     if (Object.keys(update).length === 0) {
       return res.status(400).json({
@@ -855,15 +929,15 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
       });
     }
 
-    // --------------------------------------------------------
-    // UPDATED TIME
-    // --------------------------------------------------------
+    /* --------------------------------------------------------
+         UPDATED AT
+      -------------------------------------------------------- */
 
     update.updatedAt = new Date();
 
-    // --------------------------------------------------------
-    // UPDATE DATABASE
-    // --------------------------------------------------------
+    /* --------------------------------------------------------
+         UPDATE
+      -------------------------------------------------------- */
 
     await reunionEvents.updateOne(
       {
@@ -894,11 +968,14 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
   }
 });
 
-// ============================================================
-// DELETE REUNION EVENT
-// DELETE /api/reunion-events/:eventId
-// ADMIN ONLY
-// ============================================================
+/* ============================================================
+   DELETE EVENT
+   DELETE /api/reunion-events/:eventId
+   ADMIN ONLY
+
+   IMPORTANT:
+   Uses `registrations`, NOT `reunionRegistrations`.
+============================================================ */
 
 router.delete("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
   try {
@@ -924,7 +1001,7 @@ router.delete("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
 
     await connectDB();
 
-    const { reunionEvents, reunionRegistrations } = getCollections();
+    const { reunionEvents, registrations } = getCollections();
 
     if (!reunionEvents) {
       return res.status(500).json({
@@ -948,12 +1025,12 @@ router.delete("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
       });
     }
 
-    // --------------------------------------------------------
-    // PREVENT DELETE IF REGISTRATIONS EXIST
-    // --------------------------------------------------------
+    /* --------------------------------------------------------
+         PREVENT DELETE WHEN REGISTRATIONS EXIST
+      -------------------------------------------------------- */
 
-    if (reunionRegistrations) {
-      const registrationCount = await reunionRegistrations.countDocuments({
+    if (registrations) {
+      const registrationCount = await registrations.countDocuments({
         "reunion.eventId": objectId,
       });
 
@@ -969,6 +1046,10 @@ router.delete("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
         });
       }
     }
+
+    /* --------------------------------------------------------
+         DELETE
+      -------------------------------------------------------- */
 
     await reunionEvents.deleteOne({
       _id: objectId,
@@ -992,8 +1073,8 @@ router.delete("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
   }
 });
 
-// ============================================================
-// EXPORT
-// ============================================================
+/* ============================================================
+   EXPORT
+============================================================ */
 
 export default router;
