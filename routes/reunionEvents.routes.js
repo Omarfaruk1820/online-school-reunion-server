@@ -2,26 +2,44 @@ import express from "express";
 import { ObjectId } from "mongodb";
 
 import { connectDB, getCollections } from "../config/db.js";
-import verifyToken from "../middleware/verifyToken.js";
-import verifyAdmin from "../middleware/verifyAdmin.js";
+import  verifyToken  from "../middleware/verifyToken.js";
+import verifyAdmin  from "../middleware/verifyAdmin.js";
 
 const router = express.Router();
 
-/* ============================================================
-   CONSTANTS
-============================================================ */
+// ============================================================
+// Constants
+// ============================================================
 
-const MAX_TITLE_LENGTH = 150;
-const MAX_SHORT_TITLE_LENGTH = 100;
-const MAX_EDITION_LENGTH = 100;
-const MAX_VENUE_LENGTH = 200;
-const MAX_DESCRIPTION_LENGTH = 5000;
+const VALID_EVENT_TYPES = new Set([
+  "school-reunion",
+  "reunion",
+  "school-event",
+]);
 
-const TIME_REGEX = /^([01]\d|2[0-3]):([0-5]\d)$/;
+const VALID_EVENT_STATUS = new Set([
+  "draft",
+  "published",
+  "cancelled",
+  "completed",
+]);
 
-/* ============================================================
-   HELPERS
-============================================================ */
+const VALID_STUDENT_TYPES = new Set(["current", "alumni"]);
+
+const VALID_CLASS_LEVELS = new Set(["6", "7", "8", "9", "10"]);
+
+const VALID_DEPARTMENTS = new Set([
+  "science",
+  "commerce",
+  "humanities",
+  "vocational",
+]);
+
+const VALID_TSHIRT_SIZES = new Set(["XS", "S", "M", "L", "XL", "XXL", "3XL"]);
+
+// ============================================================
+// Helpers
+// ============================================================
 
 const normalizeString = (value) => {
   if (typeof value !== "string") {
@@ -33,6 +51,14 @@ const normalizeString = (value) => {
 
 const normalizeEmail = (value) => {
   return normalizeString(value).toLowerCase();
+};
+
+const normalizeBoolean = (value, defaultValue = false) => {
+  if (typeof value === "boolean") {
+    return value;
+  }
+
+  return defaultValue;
 };
 
 const normalizeDate = (value) => {
@@ -49,8 +75,12 @@ const normalizeDate = (value) => {
   return date;
 };
 
-const isValidObjectId = (value) => {
-  return ObjectId.isValid(value);
+const normalizeObjectId = (value) => {
+  if (!value || !ObjectId.isValid(value)) {
+    return null;
+  }
+
+  return new ObjectId(value);
 };
 
 const serializeDocument = (document) => {
@@ -60,174 +90,275 @@ const serializeDocument = (document) => {
 
   return {
     ...document,
-    _id: document._id?.toString(),
+
+    _id: document._id?.toString?.() || document._id,
+
+    createdBy: document.createdBy
+      ? {
+          ...document.createdBy,
+        }
+      : undefined,
   };
 };
 
-const getAuthenticatedUser = (req) => {
-  return req.user || req.userData || null;
+// ============================================================
+// Venue
+// ============================================================
+
+const normalizeVenue = (venue) => {
+  // Support old string format
+  if (typeof venue === "string") {
+    const value = normalizeString(venue);
+
+    if (!value) {
+      return null;
+    }
+
+    return {
+      name: value,
+      address: "",
+      city: "",
+      country: "Bangladesh",
+    };
+  }
+
+  if (!venue || typeof venue !== "object") {
+    return null;
+  }
+
+  return {
+    name: normalizeString(venue.name),
+    address: normalizeString(venue.address),
+    city: normalizeString(venue.city),
+    country: normalizeString(venue.country) || "Bangladesh",
+  };
 };
 
-const getAuthenticatedUid = (req) => {
-  const user = getAuthenticatedUser(req);
+// ============================================================
+// Eligibility
+// ============================================================
 
-  return normalizeString(user?.uid);
+const normalizeEligibility = (eligibility = {}) => {
+  const studentTypes = Array.isArray(eligibility.studentTypes)
+    ? eligibility.studentTypes
+        .map(normalizeString)
+        .map((value) => value.toLowerCase())
+        .filter((value) => VALID_STUDENT_TYPES.has(value))
+    : ["current", "alumni"];
+
+  const classLevels = Array.isArray(eligibility.classLevels)
+    ? eligibility.classLevels
+        .map((value) => normalizeString(String(value)))
+        .filter((value) => VALID_CLASS_LEVELS.has(value))
+    : ["6", "7", "8", "9", "10"];
+
+  const departments = Array.isArray(eligibility.departments)
+    ? eligibility.departments
+        .map(normalizeString)
+        .map((value) => value.toLowerCase())
+        .filter((value) => VALID_DEPARTMENTS.has(value))
+    : ["science", "commerce", "humanities", "vocational"];
+
+  return {
+    studentTypes: [...new Set(studentTypes)],
+
+    classLevels: [...new Set(classLevels)],
+
+    departments: [...new Set(departments)],
+  };
 };
 
-const getAuthenticatedEmail = (req) => {
-  const user = getAuthenticatedUser(req);
+// ============================================================
+// Gifts
+// ============================================================
 
-  return normalizeEmail(user?.email);
+const normalizeGifts = (gifts = {}) => {
+  const items = Array.isArray(gifts.items)
+    ? gifts.items.map(normalizeString).filter(Boolean)
+    : [];
+
+  return {
+    included: gifts.included !== false,
+
+    items,
+  };
 };
 
-const isValidTime = (value) => {
-  return TIME_REGEX.test(value);
+// ============================================================
+// Registration settings
+// ============================================================
+
+const normalizeRegistration = (registration = {}, registrationOpen = true) => {
+  return {
+    open:
+      typeof registration.open === "boolean"
+        ? registration.open
+        : registrationOpen,
+
+    requiresAuthentication: registration.requiresAuthentication !== false,
+
+    requiresPhone: registration.requiresPhone !== false,
+
+    requiresConsent: registration.requiresConsent !== false,
+
+    allowMultipleRegistrations:
+      registration.allowMultipleRegistrations === true,
+  };
 };
 
-const isTimeRangeValid = (startTime, endTime) => {
-  if (!isValidTime(startTime) || !isValidTime(endTime)) {
-    return false;
-  }
+// ============================================================
+// QR configuration
+// ============================================================
 
-  return startTime < endTime;
+const normalizeQrCode = (qrCode = {}) => {
+  return {
+    enabled: qrCode.enabled !== false,
+
+    purpose: normalizeString(qrCode.purpose) || "attendance",
+
+    version: Number(qrCode.version) || 1,
+  };
 };
 
-/* ============================================================
-   EVENT PAYLOAD VALIDATION
-============================================================ */
+// ============================================================
+// Capacity
+// ============================================================
 
-const validateEventPayload = ({
-  title,
-  shortTitle,
-  edition,
-  eventDate,
-  startTime,
-  endTime,
-  venue,
-  registrationDeadline,
-  description,
-}) => {
-  const errors = {};
+const normalizeCapacity = (capacity = {}) => {
+  const enabled = capacity.enabled === true;
 
-  /* ----------------------------------------------------------
-     TITLE
-  ---------------------------------------------------------- */
-
-  if (!title) {
-    errors.title = "Event title is required.";
-  } else if (title.length > MAX_TITLE_LENGTH) {
-    errors.title = `Event title cannot exceed ${MAX_TITLE_LENGTH} characters.`;
-  }
-
-  /* ----------------------------------------------------------
-     SHORT TITLE
-  ---------------------------------------------------------- */
-
-  if (shortTitle && shortTitle.length > MAX_SHORT_TITLE_LENGTH) {
-    errors.shortTitle = `Short title cannot exceed ${MAX_SHORT_TITLE_LENGTH} characters.`;
-  }
-
-  /* ----------------------------------------------------------
-     EDITION
-  ---------------------------------------------------------- */
-
-  if (edition && edition.length > MAX_EDITION_LENGTH) {
-    errors.edition = `Edition cannot exceed ${MAX_EDITION_LENGTH} characters.`;
-  }
-
-  /* ----------------------------------------------------------
-     EVENT DATE
-  ---------------------------------------------------------- */
-
-  if (!eventDate) {
-    errors.eventDate = "Event date is required.";
-  }
-
-  /* ----------------------------------------------------------
-     START TIME
-  ---------------------------------------------------------- */
-
-  if (!startTime) {
-    errors.startTime = "Start time is required.";
-  } else if (!isValidTime(startTime)) {
-    errors.startTime = "Start time must use HH:mm format.";
-  }
-
-  /* ----------------------------------------------------------
-     END TIME
-  ---------------------------------------------------------- */
-
-  if (!endTime) {
-    errors.endTime = "End time is required.";
-  } else if (!isValidTime(endTime)) {
-    errors.endTime = "End time must use HH:mm format.";
-  }
-
-  /* ----------------------------------------------------------
-     TIME RANGE
-  ---------------------------------------------------------- */
+  let maximum = null;
 
   if (
-    startTime &&
-    endTime &&
-    isValidTime(startTime) &&
-    isValidTime(endTime) &&
-    startTime >= endTime
+    capacity.maximum !== null &&
+    capacity.maximum !== undefined &&
+    capacity.maximum !== ""
   ) {
-    errors.endTime = "End time must be later than start time.";
-  }
+    const parsedMaximum = Number(capacity.maximum);
 
-  /* ----------------------------------------------------------
-     VENUE
-  ---------------------------------------------------------- */
-
-  if (!venue) {
-    errors.venue = "Venue is required.";
-  } else if (venue.length > MAX_VENUE_LENGTH) {
-    errors.venue = `Venue cannot exceed ${MAX_VENUE_LENGTH} characters.`;
-  }
-
-  /* ----------------------------------------------------------
-     REGISTRATION DEADLINE
-  ---------------------------------------------------------- */
-
-  if (registrationDeadline) {
-    const deadline = normalizeDate(registrationDeadline);
-
-    if (!deadline) {
-      errors.registrationDeadline =
-        "Registration deadline must be a valid date.";
+    if (Number.isInteger(parsedMaximum) && parsedMaximum > 0) {
+      maximum = parsedMaximum;
     }
   }
 
-  /* ----------------------------------------------------------
-     DESCRIPTION
-  ---------------------------------------------------------- */
+  return {
+    enabled,
+    maximum,
+    reserved: Number(capacity.reserved) || 0,
+  };
+};
 
-  if (description && description.length > MAX_DESCRIPTION_LENGTH) {
-    errors.description = `Description cannot exceed ${MAX_DESCRIPTION_LENGTH} characters.`;
+// ============================================================
+// Payment
+// ============================================================
+
+const normalizePayment = (payment = {}, paymentRequired = false) => {
+  const required = payment.required === true || paymentRequired === true;
+
+  const amount = Number(payment.amount) || 0;
+
+  return {
+    required,
+
+    currency: normalizeString(payment.currency) || "BDT",
+
+    amount: amount >= 0 ? amount : 0,
+
+    status:
+      normalizeString(payment.status) ||
+      (required ? "pending" : "not-required"),
+  };
+};
+
+// ============================================================
+// Features
+// ============================================================
+
+const normalizeFeatures = (features = {}) => {
+  return {
+    registration: features.registration !== false,
+
+    giftDistribution: features.giftDistribution !== false,
+
+    attendanceTracking: features.attendanceTracking !== false,
+
+    schedule: features.schedule !== false,
+
+    gallery: features.gallery !== false,
+
+    announcements: features.announcements !== false,
+
+    sponsors: features.sponsors !== false,
+  };
+};
+
+// ============================================================
+// Event validation
+// ============================================================
+
+const validateEventData = (data) => {
+  const errors = [];
+
+  if (!data.title) {
+    errors.push("Event title is required.");
+  }
+
+  if (!data.shortTitle) {
+    errors.push("Event short title is required.");
+  }
+
+  if (!data.eventDate) {
+    errors.push("Event date is required.");
+  }
+
+  if (!data.startTime) {
+    errors.push("Event start time is required.");
+  }
+
+  if (!data.endTime) {
+    errors.push("Event end time is required.");
+  }
+
+  if (!data.venue?.name) {
+    errors.push("Venue name is required.");
+  }
+
+  if (data.eventType && !VALID_EVENT_TYPES.has(data.eventType)) {
+    errors.push("Invalid event type.");
+  }
+
+  if (data.status && !VALID_EVENT_STATUS.has(data.status)) {
+    errors.push("Invalid event status.");
+  }
+
+  if (
+    data.registrationDeadline &&
+    data.eventDate &&
+    data.registrationDeadline > data.eventDate
+  ) {
+    errors.push("Registration deadline cannot be after the event date.");
   }
 
   return errors;
 };
 
-/* ============================================================
-   ROUTE TEST
-   GET /api/reunion-events/test
-============================================================ */
+// ============================================================
+// GET /api/reunion-events/test
+// ============================================================
 
 router.get("/test", (req, res) => {
   return res.status(200).json({
     success: true,
     message: "Reunion events route is working.",
-    route: "/api/reunion-events/test",
+    route: "/api/reunion-events",
   });
 });
 
-/* ============================================================
-   GET ACTIVE EVENT
-   GET /api/reunion-events/active
-============================================================ */
+// ============================================================
+// GET /api/reunion-events/active
+//
+// Returns active registration event.
+// ============================================================
 
 router.get("/active", async (req, res) => {
   try {
@@ -239,7 +370,7 @@ router.get("/active", async (req, res) => {
       return res.status(500).json({
         success: false,
         code: "database/collection-not-found",
-        message: "Reunion events collection is unavailable.",
+        message: "reunionEvents collection is not available.",
       });
     }
 
@@ -268,20 +399,21 @@ router.get("/active", async (req, res) => {
       data: serializeDocument(event),
     });
   } catch (error) {
-    console.error("GET ACTIVE REUNION EVENT ERROR:", error);
+    console.error("GET /api/reunion-events/active error:", error);
 
     return res.status(500).json({
       success: false,
-      code: "reunion/event-load-failed",
+      code: "reunion/server-error",
       message: "Failed to load active reunion event.",
     });
   }
 });
 
-/* ============================================================
-   GET ALL EVENTS
-   GET /api/reunion-events
-============================================================ */
+// ============================================================
+// GET /api/reunion-events
+//
+// Returns all reunion events.
+// ============================================================
 
 router.get("/", async (req, res) => {
   try {
@@ -293,14 +425,14 @@ router.get("/", async (req, res) => {
       return res.status(500).json({
         success: false,
         code: "database/collection-not-found",
-        message: "Reunion events collection is unavailable.",
+        message: "reunionEvents collection is not available.",
       });
     }
 
     const events = await reunionEvents
       .find({})
       .sort({
-        eventDate: -1,
+        eventDate: 1,
         createdAt: -1,
       })
       .toArray();
@@ -311,36 +443,22 @@ router.get("/", async (req, res) => {
       data: events.map(serializeDocument),
     });
   } catch (error) {
-    console.error("GET REUNION EVENTS ERROR:", error);
+    console.error("GET /api/reunion-events error:", error);
 
     return res.status(500).json({
       success: false,
-      code: "reunion/events-load-failed",
+      code: "reunion/server-error",
       message: "Failed to load reunion events.",
     });
   }
 });
 
-/* ============================================================
-   GET EVENT BY ID
-   GET /api/reunion-events/:eventId
-
-   IMPORTANT:
-   This must stay AFTER /active.
-============================================================ */
+// ============================================================
+// GET /api/reunion-events/:eventId
+// ============================================================
 
 router.get("/:eventId", async (req, res) => {
   try {
-    const eventId = normalizeString(req.params.eventId);
-
-    if (!eventId || !isValidObjectId(eventId)) {
-      return res.status(400).json({
-        success: false,
-        code: "validation/event-id",
-        message: "Invalid reunion event ID.",
-      });
-    }
-
     await connectDB();
 
     const { reunionEvents } = getCollections();
@@ -349,12 +467,22 @@ router.get("/:eventId", async (req, res) => {
       return res.status(500).json({
         success: false,
         code: "database/collection-not-found",
-        message: "Reunion events collection is unavailable.",
+        message: "reunionEvents collection is not available.",
+      });
+    }
+
+    const eventId = normalizeObjectId(req.params.eventId);
+
+    if (!eventId) {
+      return res.status(400).json({
+        success: false,
+        code: "validation/invalid-event-id",
+        message: "Invalid reunion event ID.",
       });
     }
 
     const event = await reunionEvents.findOne({
-      _id: new ObjectId(eventId),
+      _id: eventId,
     });
 
     if (!event) {
@@ -370,99 +498,24 @@ router.get("/:eventId", async (req, res) => {
       data: serializeDocument(event),
     });
   } catch (error) {
-    console.error("GET REUNION EVENT BY ID ERROR:", error);
+    console.error("GET /api/reunion-events/:eventId error:", error);
 
     return res.status(500).json({
       success: false,
-      code: "reunion/event-load-failed",
+      code: "reunion/server-error",
       message: "Failed to load reunion event.",
     });
   }
 });
 
-/* ============================================================
-   CREATE EVENT
-   POST /api/reunion-events
-   ADMIN ONLY
-============================================================ */
+// ============================================================
+// POST /api/reunion-events
+//
+// Admin creates a new reunion event.
+// ============================================================
 
 router.post("/", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    const uid = getAuthenticatedUid(req);
-    const adminEmail = getAuthenticatedEmail(req);
-
-    if (!uid) {
-      return res.status(401).json({
-        success: false,
-        code: "auth/unauthorized",
-        message: "Authentication is required.",
-      });
-    }
-
-    const {
-      title,
-      shortTitle,
-      edition,
-      eventDate,
-      startTime,
-      endTime,
-      venue,
-      registrationOpen,
-      registrationDeadline,
-      paymentRequired,
-      description,
-    } = req.body || {};
-
-    const normalizedTitle = normalizeString(title);
-    const normalizedShortTitle = normalizeString(shortTitle);
-    const normalizedEdition = normalizeString(edition);
-    const normalizedVenue = normalizeString(venue);
-    const normalizedDescription = normalizeString(description);
-
-    const normalizedEventDate = normalizeDate(eventDate);
-
-    const normalizedRegistrationDeadline = registrationDeadline
-      ? normalizeDate(registrationDeadline)
-      : null;
-
-    const normalizedStartTime = normalizeString(startTime);
-    const normalizedEndTime = normalizeString(endTime);
-
-    const normalizedRegistrationOpen =
-      typeof registrationOpen === "boolean" ? registrationOpen : false;
-
-    const normalizedPaymentRequired =
-      typeof paymentRequired === "boolean" ? paymentRequired : false;
-
-    /* ----------------------------------------------------------
-       VALIDATION
-    ---------------------------------------------------------- */
-
-    const validationErrors = validateEventPayload({
-      title: normalizedTitle,
-      shortTitle: normalizedShortTitle,
-      edition: normalizedEdition,
-      eventDate: normalizedEventDate,
-      startTime: normalizedStartTime,
-      endTime: normalizedEndTime,
-      venue: normalizedVenue,
-      registrationDeadline: normalizedRegistrationDeadline,
-      description: normalizedDescription,
-    });
-
-    if (Object.keys(validationErrors).length > 0) {
-      return res.status(400).json({
-        success: false,
-        code: "validation/event",
-        message: "Please correct the event information.",
-        errors: validationErrors,
-      });
-    }
-
-    /* ----------------------------------------------------------
-       DATABASE
-    ---------------------------------------------------------- */
-
     await connectDB();
 
     const { reunionEvents } = getCollections();
@@ -471,15 +524,69 @@ router.post("/", verifyToken, verifyAdmin, async (req, res) => {
       return res.status(500).json({
         success: false,
         code: "database/collection-not-found",
-        message: "Reunion events collection is unavailable.",
+        message: "reunionEvents collection is not available.",
       });
     }
 
-    /* ----------------------------------------------------------
-       ONE ACTIVE EVENT ONLY
-    ---------------------------------------------------------- */
+    const body = req.body || {};
 
-    if (normalizedRegistrationOpen) {
+    const title = normalizeString(body.title);
+
+    const shortTitle = normalizeString(body.shortTitle);
+
+    const slug =
+      normalizeString(body.slug) ||
+      title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
+
+    const edition = normalizeString(body.edition) || "76 Years Celebration";
+
+    const eventType = normalizeString(body.eventType) || "school-reunion";
+
+    const status = normalizeString(body.status) || "draft";
+
+    const eventDate = normalizeDate(body.eventDate);
+
+    const registrationDeadline = normalizeDate(body.registrationDeadline);
+
+    const startTime = normalizeString(body.startTime);
+
+    const endTime = normalizeString(body.endTime);
+
+    const venue = normalizeVenue(body.venue);
+
+    const registrationOpen = normalizeBoolean(body.registrationOpen, false);
+
+    const paymentRequired = normalizeBoolean(body.paymentRequired, false);
+
+    const errors = validateEventData({
+      title,
+      shortTitle,
+      eventDate,
+      startTime,
+      endTime,
+      venue,
+      eventType,
+      status,
+      registrationDeadline,
+    });
+
+    if (errors.length > 0) {
+      return res.status(400).json({
+        success: false,
+        code: "validation/event-invalid",
+        message: errors[0],
+        errors,
+      });
+    }
+
+    // --------------------------------------------------------
+    // Only one active registration event
+    // --------------------------------------------------------
+
+    if (registrationOpen) {
       const existingActiveEvent = await reunionEvents.findOne({
         registrationOpen: true,
       });
@@ -490,65 +597,77 @@ router.post("/", verifyToken, verifyAdmin, async (req, res) => {
           code: "reunion/active-event-exists",
           message: "Another reunion event is already open for registration.",
           data: {
-            eventId: existingActiveEvent._id?.toString() || null,
-
-            title: existingActiveEvent.title || null,
+            eventId: existingActiveEvent._id.toString(),
+            title: existingActiveEvent.title,
           },
         });
       }
     }
 
-    /* ----------------------------------------------------------
-       REGISTRATION DEADLINE MUST NOT BE AFTER EVENT
-    ---------------------------------------------------------- */
-
-    if (
-      normalizedRegistrationDeadline &&
-      normalizedEventDate &&
-      normalizedRegistrationDeadline > normalizedEventDate
-    ) {
-      return res.status(400).json({
-        success: false,
-        code: "validation/registration-deadline",
-        message: "Registration deadline cannot be later than the event date.",
-      });
-    }
-
-    /* ----------------------------------------------------------
-       CREATE DOCUMENT
-    ---------------------------------------------------------- */
-
     const now = new Date();
 
+    const authenticatedUser = req.user || req.userData || {};
+
     const eventDocument = {
-      title: normalizedTitle,
+      title,
 
-      shortTitle: normalizedShortTitle || null,
+      shortTitle,
 
-      edition: normalizedEdition || null,
+      slug,
 
-      eventDate: normalizedEventDate,
+      edition,
 
-      startTime: normalizedStartTime,
+      eventType,
 
-      endTime: normalizedEndTime,
+      status,
 
-      venue: normalizedVenue,
+      eventDate,
 
-      registrationOpen: normalizedRegistrationOpen,
+      weekday:
+        normalizeString(body.weekday) ||
+        eventDate.toLocaleDateString("en-US", {
+          weekday: "long",
+          timeZone: body.timezone || "Asia/Dhaka",
+        }),
 
-      registrationDeadline: normalizedRegistrationDeadline,
+      startTime,
 
-      paymentRequired: normalizedPaymentRequired,
+      endTime,
 
-      description: normalizedDescription || null,
+      timezone: normalizeString(body.timezone) || "Asia/Dhaka",
+
+      venue,
+
+      registrationOpen,
+
+      registrationDeadline,
+
+      paymentRequired,
+
+      registration: normalizeRegistration(body.registration, registrationOpen),
+
+      qrCode: normalizeQrCode(body.qrCode),
+
+      capacity: normalizeCapacity(body.capacity),
+
+      payment: normalizePayment(body.payment, paymentRequired),
+
+      gifts: normalizeGifts(body.gifts),
+
+      eligibility: normalizeEligibility(body.eligibility),
+
+      features: normalizeFeatures(body.features),
+
+      description: normalizeString(body.description),
 
       createdBy: {
-        uid,
-        email: adminEmail || null,
+        uid: normalizeString(authenticatedUser.uid),
+
+        email: normalizeEmail(authenticatedUser.email),
       },
 
       createdAt: now,
+
       updatedAt: now,
     };
 
@@ -557,52 +676,30 @@ router.post("/", verifyToken, verifyAdmin, async (req, res) => {
     return res.status(201).json({
       success: true,
       message: "Reunion event created successfully.",
-
       data: {
         ...serializeDocument(eventDocument),
-
         _id: result.insertedId.toString(),
       },
     });
   } catch (error) {
-    console.error("CREATE REUNION EVENT ERROR:", error);
+    console.error("POST /api/reunion-events error:", error);
 
     return res.status(500).json({
       success: false,
-      code: "reunion/event-create-failed",
+      code: "reunion/server-error",
       message: "Failed to create reunion event.",
     });
   }
 });
 
-/* ============================================================
-   UPDATE EVENT
-   PATCH /api/reunion-events/:eventId
-   ADMIN ONLY
-============================================================ */
+// ============================================================
+// PATCH /api/reunion-events/:eventId
+//
+// Admin updates reunion event.
+// ============================================================
 
 router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    const uid = getAuthenticatedUid(req);
-
-    if (!uid) {
-      return res.status(401).json({
-        success: false,
-        code: "auth/unauthorized",
-        message: "Authentication is required.",
-      });
-    }
-
-    const eventId = normalizeString(req.params.eventId);
-
-    if (!eventId || !isValidObjectId(eventId)) {
-      return res.status(400).json({
-        success: false,
-        code: "validation/event-id",
-        message: "Invalid reunion event ID.",
-      });
-    }
-
     await connectDB();
 
     const { reunionEvents } = getCollections();
@@ -611,14 +708,22 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
       return res.status(500).json({
         success: false,
         code: "database/collection-not-found",
-        message: "Reunion events collection is unavailable.",
+        message: "reunionEvents collection is not available.",
       });
     }
 
-    const objectId = new ObjectId(eventId);
+    const eventId = normalizeObjectId(req.params.eventId);
+
+    if (!eventId) {
+      return res.status(400).json({
+        success: false,
+        code: "validation/invalid-event-id",
+        message: "Invalid reunion event ID.",
+      });
+    }
 
     const existingEvent = await reunionEvents.findOne({
-      _id: objectId,
+      _id: eventId,
     });
 
     if (!existingEvent) {
@@ -630,73 +735,36 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
     }
 
     const body = req.body || {};
+
     const update = {};
 
-    /* --------------------------------------------------------
-         TITLE
-      -------------------------------------------------------- */
+    // --------------------------------------------------------
+    // Basic fields
+    // --------------------------------------------------------
 
     if (body.title !== undefined) {
-      const title = normalizeString(body.title);
-
-      if (!title) {
-        return res.status(400).json({
-          success: false,
-          code: "validation/title",
-          message: "Event title cannot be empty.",
-        });
-      }
-
-      if (title.length > MAX_TITLE_LENGTH) {
-        return res.status(400).json({
-          success: false,
-          code: "validation/title",
-          message: `Event title cannot exceed ${MAX_TITLE_LENGTH} characters.`,
-        });
-      }
-
-      update.title = title;
+      update.title = normalizeString(body.title);
     }
-
-    /* --------------------------------------------------------
-         SHORT TITLE
-      -------------------------------------------------------- */
 
     if (body.shortTitle !== undefined) {
-      const shortTitle = normalizeString(body.shortTitle);
-
-      if (shortTitle.length > MAX_SHORT_TITLE_LENGTH) {
-        return res.status(400).json({
-          success: false,
-          code: "validation/short-title",
-          message: `Short title cannot exceed ${MAX_SHORT_TITLE_LENGTH} characters.`,
-        });
-      }
-
-      update.shortTitle = shortTitle || null;
+      update.shortTitle = normalizeString(body.shortTitle);
     }
 
-    /* --------------------------------------------------------
-         EDITION
-      -------------------------------------------------------- */
+    if (body.slug !== undefined) {
+      update.slug = normalizeString(body.slug);
+    }
 
     if (body.edition !== undefined) {
-      const edition = normalizeString(body.edition);
-
-      if (edition.length > MAX_EDITION_LENGTH) {
-        return res.status(400).json({
-          success: false,
-          code: "validation/edition",
-          message: `Edition cannot exceed ${MAX_EDITION_LENGTH} characters.`,
-        });
-      }
-
-      update.edition = edition || null;
+      update.edition = normalizeString(body.edition);
     }
 
-    /* --------------------------------------------------------
-         EVENT DATE
-      -------------------------------------------------------- */
+    if (body.eventType !== undefined) {
+      update.eventType = normalizeString(body.eventType);
+    }
+
+    if (body.status !== undefined) {
+      update.status = normalizeString(body.status);
+    }
 
     if (body.eventDate !== undefined) {
       const eventDate = normalizeDate(body.eventDate);
@@ -704,7 +772,7 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
       if (!eventDate) {
         return res.status(400).json({
           success: false,
-          code: "validation/event-date",
+          code: "validation/invalid-event-date",
           message: "Invalid event date.",
         });
       }
@@ -712,245 +780,197 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
       update.eventDate = eventDate;
     }
 
-    /* --------------------------------------------------------
-         START TIME
-      -------------------------------------------------------- */
+    if (body.weekday !== undefined) {
+      update.weekday = normalizeString(body.weekday);
+    }
 
     if (body.startTime !== undefined) {
-      const startTime = normalizeString(body.startTime);
-
-      if (!isValidTime(startTime)) {
-        return res.status(400).json({
-          success: false,
-          code: "validation/start-time",
-          message: "Start time must use HH:mm format.",
-        });
-      }
-
-      update.startTime = startTime;
+      update.startTime = normalizeString(body.startTime);
     }
-
-    /* --------------------------------------------------------
-         END TIME
-      -------------------------------------------------------- */
 
     if (body.endTime !== undefined) {
-      const endTime = normalizeString(body.endTime);
-
-      if (!isValidTime(endTime)) {
-        return res.status(400).json({
-          success: false,
-          code: "validation/end-time",
-          message: "End time must use HH:mm format.",
-        });
-      }
-
-      update.endTime = endTime;
+      update.endTime = normalizeString(body.endTime);
     }
 
-    /* --------------------------------------------------------
-         FINAL TIME VALIDATION
-      -------------------------------------------------------- */
-
-    const finalStartTime = update.startTime ?? existingEvent.startTime;
-
-    const finalEndTime = update.endTime ?? existingEvent.endTime;
-
-    if (
-      finalStartTime &&
-      finalEndTime &&
-      isValidTime(finalStartTime) &&
-      isValidTime(finalEndTime) &&
-      finalStartTime >= finalEndTime
-    ) {
-      return res.status(400).json({
-        success: false,
-        code: "validation/time-range",
-        message: "End time must be later than start time.",
-      });
+    if (body.timezone !== undefined) {
+      update.timezone = normalizeString(body.timezone);
     }
 
-    /* --------------------------------------------------------
-         VENUE
-      -------------------------------------------------------- */
+    // --------------------------------------------------------
+    // Venue
+    // --------------------------------------------------------
 
     if (body.venue !== undefined) {
-      const venue = normalizeString(body.venue);
+      const venue = normalizeVenue(body.venue);
 
-      if (!venue) {
+      if (!venue?.name) {
         return res.status(400).json({
           success: false,
-          code: "validation/venue",
-          message: "Venue cannot be empty.",
-        });
-      }
-
-      if (venue.length > MAX_VENUE_LENGTH) {
-        return res.status(400).json({
-          success: false,
-          code: "validation/venue",
-          message: `Venue cannot exceed ${MAX_VENUE_LENGTH} characters.`,
+          code: "validation/invalid-venue",
+          message: "Venue name is required.",
         });
       }
 
       update.venue = venue;
     }
 
-    /* --------------------------------------------------------
-         REGISTRATION DEADLINE
-      -------------------------------------------------------- */
-
-    if (body.registrationDeadline !== undefined) {
-      if (
-        body.registrationDeadline === null ||
-        body.registrationDeadline === ""
-      ) {
-        update.registrationDeadline = null;
-      } else {
-        const deadline = normalizeDate(body.registrationDeadline);
-
-        if (!deadline) {
-          return res.status(400).json({
-            success: false,
-            code: "validation/registration-deadline",
-            message: "Invalid registration deadline.",
-          });
-        }
-
-        update.registrationDeadline = deadline;
-      }
-    }
-
-    /* --------------------------------------------------------
-         PAYMENT REQUIRED
-      -------------------------------------------------------- */
-
-    if (body.paymentRequired !== undefined) {
-      if (typeof body.paymentRequired !== "boolean") {
-        return res.status(400).json({
-          success: false,
-          code: "validation/payment-required",
-          message: "paymentRequired must be a boolean.",
-        });
-      }
-
-      update.paymentRequired = body.paymentRequired;
-    }
-
-    /* --------------------------------------------------------
-         DESCRIPTION
-      -------------------------------------------------------- */
-
-    if (body.description !== undefined) {
-      const description = normalizeString(body.description);
-
-      if (description.length > MAX_DESCRIPTION_LENGTH) {
-        return res.status(400).json({
-          success: false,
-          code: "validation/description",
-          message: `Description cannot exceed ${MAX_DESCRIPTION_LENGTH} characters.`,
-        });
-      }
-
-      update.description = description || null;
-    }
-
-    /* --------------------------------------------------------
-         REGISTRATION OPEN
-      -------------------------------------------------------- */
+    // --------------------------------------------------------
+    // Registration
+    // --------------------------------------------------------
 
     if (body.registrationOpen !== undefined) {
-      if (typeof body.registrationOpen !== "boolean") {
+      update.registrationOpen = normalizeBoolean(body.registrationOpen, false);
+    }
+
+    if (body.registrationDeadline !== undefined) {
+      const deadline = body.registrationDeadline
+        ? normalizeDate(body.registrationDeadline)
+        : null;
+
+      if (body.registrationDeadline && !deadline) {
         return res.status(400).json({
           success: false,
-          code: "validation/registration-open",
-          message: "registrationOpen must be a boolean.",
+          code: "validation/invalid-registration-deadline",
+          message: "Invalid registration deadline.",
         });
       }
 
-      if (body.registrationOpen === true) {
-        const anotherActiveEvent = await reunionEvents.findOne({
-          _id: {
-            $ne: objectId,
-          },
-
-          registrationOpen: true,
-        });
-
-        if (anotherActiveEvent) {
-          return res.status(409).json({
-            success: false,
-            code: "reunion/active-event-exists",
-            message: "Another reunion event is already open for registration.",
-            data: {
-              eventId: anotherActiveEvent._id?.toString() || null,
-
-              title: anotherActiveEvent.title || null,
-            },
-          });
-        }
-      }
-
-      update.registrationOpen = body.registrationOpen;
+      update.registrationDeadline = deadline;
     }
 
-    /* --------------------------------------------------------
-         FINAL DATE / DEADLINE VALIDATION
-      -------------------------------------------------------- */
+    if (body.registration !== undefined) {
+      update.registration = normalizeRegistration(
+        body.registration,
+        update.registrationOpen ?? existingEvent.registrationOpen,
+      );
+    }
 
-    const finalEventDate = update.eventDate ?? existingEvent.eventDate;
+    // --------------------------------------------------------
+    // QR
+    // --------------------------------------------------------
 
-    const finalDeadline =
-      update.registrationDeadline !== undefined
-        ? update.registrationDeadline
-        : existingEvent.registrationDeadline;
+    if (body.qrCode !== undefined) {
+      update.qrCode = normalizeQrCode(body.qrCode);
+    }
+
+    // --------------------------------------------------------
+    // Capacity
+    // --------------------------------------------------------
+
+    if (body.capacity !== undefined) {
+      update.capacity = normalizeCapacity(body.capacity);
+    }
+
+    // --------------------------------------------------------
+    // Payment
+    // --------------------------------------------------------
+
+    if (body.paymentRequired !== undefined) {
+      update.paymentRequired = normalizeBoolean(body.paymentRequired, false);
+    }
+
+    if (body.payment !== undefined) {
+      update.payment = normalizePayment(
+        body.payment,
+        update.paymentRequired ?? existingEvent.paymentRequired,
+      );
+    }
+
+    // --------------------------------------------------------
+    // Gifts
+    // --------------------------------------------------------
+
+    if (body.gifts !== undefined) {
+      update.gifts = normalizeGifts(body.gifts);
+    }
+
+    // --------------------------------------------------------
+    // Eligibility
+    // --------------------------------------------------------
+
+    if (body.eligibility !== undefined) {
+      update.eligibility = normalizeEligibility(body.eligibility);
+    }
+
+    // --------------------------------------------------------
+    // Features
+    // --------------------------------------------------------
+
+    if (body.features !== undefined) {
+      update.features = normalizeFeatures(body.features);
+    }
+
+    // --------------------------------------------------------
+    // Description
+    // --------------------------------------------------------
+
+    if (body.description !== undefined) {
+      update.description = normalizeString(body.description);
+    }
+
+    // --------------------------------------------------------
+    // Validate merged event
+    // --------------------------------------------------------
+
+    const mergedEvent = {
+      ...existingEvent,
+      ...update,
+    };
+
+    const validationErrors = validateEventData(mergedEvent);
+
+    if (validationErrors.length > 0) {
+      return res.status(400).json({
+        success: false,
+        code: "validation/event-invalid",
+        message: validationErrors[0],
+        errors: validationErrors,
+      });
+    }
+
+    // --------------------------------------------------------
+    // Prevent multiple active events
+    // --------------------------------------------------------
 
     if (
-      finalDeadline &&
-      finalEventDate &&
-      new Date(finalDeadline) > new Date(finalEventDate)
+      update.registrationOpen === true &&
+      existingEvent.registrationOpen !== true
     ) {
-      return res.status(400).json({
-        success: false,
-        code: "validation/registration-deadline",
-        message: "Registration deadline cannot be later than the event date.",
+      const anotherActiveEvent = await reunionEvents.findOne({
+        _id: {
+          $ne: eventId,
+        },
+        registrationOpen: true,
       });
+
+      if (anotherActiveEvent) {
+        return res.status(409).json({
+          success: false,
+          code: "reunion/active-event-exists",
+          message: "Another reunion event is already open for registration.",
+          data: {
+            eventId: anotherActiveEvent._id.toString(),
+            title: anotherActiveEvent.title,
+          },
+        });
+      }
     }
-
-    /* --------------------------------------------------------
-         NOTHING TO UPDATE
-      -------------------------------------------------------- */
-
-    if (Object.keys(update).length === 0) {
-      return res.status(400).json({
-        success: false,
-        code: "validation/no-update",
-        message: "No valid event fields were provided for update.",
-      });
-    }
-
-    /* --------------------------------------------------------
-         UPDATED AT
-      -------------------------------------------------------- */
 
     update.updatedAt = new Date();
 
-    /* --------------------------------------------------------
-         UPDATE
-      -------------------------------------------------------- */
-
-    await reunionEvents.updateOne(
+    const result = await reunionEvents.findOneAndUpdate(
       {
-        _id: objectId,
+        _id: eventId,
       },
       {
         $set: update,
       },
+      {
+        returnDocument: "after",
+      },
     );
 
-    const updatedEvent = await reunionEvents.findOne({
-      _id: objectId,
-    });
+    const updatedEvent = result?.value || result;
 
     return res.status(200).json({
       success: true,
@@ -958,63 +978,48 @@ router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
       data: serializeDocument(updatedEvent),
     });
   } catch (error) {
-    console.error("UPDATE REUNION EVENT ERROR:", error);
+    console.error("PATCH /api/reunion-events/:eventId error:", error);
 
     return res.status(500).json({
       success: false,
-      code: "reunion/event-update-failed",
+      code: "reunion/server-error",
       message: "Failed to update reunion event.",
     });
   }
 });
 
-/* ============================================================
-   DELETE EVENT
-   DELETE /api/reunion-events/:eventId
-   ADMIN ONLY
-
-   IMPORTANT:
-   Uses `registrations`, NOT `reunionRegistrations`.
-============================================================ */
+// ============================================================
+// DELETE /api/reunion-events/:eventId
+//
+// Admin deletes an event only when there are no registrations.
+// ============================================================
 
 router.delete("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
   try {
-    const uid = getAuthenticatedUid(req);
-
-    if (!uid) {
-      return res.status(401).json({
-        success: false,
-        code: "auth/unauthorized",
-        message: "Authentication is required.",
-      });
-    }
-
-    const eventId = normalizeString(req.params.eventId);
-
-    if (!eventId || !isValidObjectId(eventId)) {
-      return res.status(400).json({
-        success: false,
-        code: "validation/event-id",
-        message: "Invalid reunion event ID.",
-      });
-    }
-
     await connectDB();
 
     const { reunionEvents, registrations } = getCollections();
 
-    if (!reunionEvents) {
+    if (!reunionEvents || !registrations) {
       return res.status(500).json({
         success: false,
         code: "database/collection-not-found",
-        message: "Reunion events collection is unavailable.",
+        message: "Required MongoDB collections are not available.",
       });
     }
 
-    const objectId = new ObjectId(eventId);
+    const eventId = normalizeObjectId(req.params.eventId);
+
+    if (!eventId) {
+      return res.status(400).json({
+        success: false,
+        code: "validation/invalid-event-id",
+        message: "Invalid reunion event ID.",
+      });
+    }
 
     const event = await reunionEvents.findOne({
-      _id: objectId,
+      _id: eventId,
     });
 
     if (!event) {
@@ -1025,56 +1030,47 @@ router.delete("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
       });
     }
 
-    /* --------------------------------------------------------
-         PREVENT DELETE WHEN REGISTRATIONS EXIST
-      -------------------------------------------------------- */
+    // --------------------------------------------------------
+    // Check registrations
+    // --------------------------------------------------------
 
-    if (registrations) {
-      const registrationCount = await registrations.countDocuments({
-        "reunion.eventId": objectId,
+    const registrationCount = await registrations.countDocuments({
+      "reunion.eventId": eventId,
+    });
+
+    if (registrationCount > 0) {
+      return res.status(409).json({
+        success: false,
+        code: "reunion/event-has-registrations",
+        message:
+          "This event cannot be deleted because registrations already exist.",
+        data: {
+          registrationCount,
+        },
       });
-
-      if (registrationCount > 0) {
-        return res.status(409).json({
-          success: false,
-          code: "reunion/event-has-registrations",
-          message:
-            "This event cannot be deleted because registrations already exist.",
-          data: {
-            registrationCount,
-          },
-        });
-      }
     }
 
-    /* --------------------------------------------------------
-         DELETE
-      -------------------------------------------------------- */
-
     await reunionEvents.deleteOne({
-      _id: objectId,
+      _id: eventId,
     });
 
     return res.status(200).json({
       success: true,
       message: "Reunion event deleted successfully.",
-      data: {
-        eventId,
-      },
     });
   } catch (error) {
-    console.error("DELETE REUNION EVENT ERROR:", error);
+    console.error("DELETE /api/reunion-events/:eventId error:", error);
 
     return res.status(500).json({
       success: false,
-      code: "reunion/event-delete-failed",
+      code: "reunion/server-error",
       message: "Failed to delete reunion event.",
     });
   }
 });
 
-/* ============================================================
-   EXPORT
-============================================================ */
+// ============================================================
+// Export
+// ============================================================
 
 export default router;
