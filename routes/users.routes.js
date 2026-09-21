@@ -124,7 +124,6 @@ function isValidHttpUrl(value) {
 
 function parsePagination(page, limit) {
   const parsedPage = Number.parseInt(page, 10);
-
   const parsedLimit = Number.parseInt(limit, 10);
 
   const safePage =
@@ -140,6 +139,28 @@ function parsePagination(page, limit) {
     limit: safeLimit,
     skip: (safePage - 1) * safeLimit,
   };
+}
+
+// ============================================================
+// FIREBASE PROVIDER
+// ============================================================
+
+function getFirebaseProvider(firebaseUser) {
+  const providerFromFirebase = cleanString(
+    firebaseUser?.firebase?.sign_in_provider,
+  );
+
+  if (providerFromFirebase) {
+    return providerFromFirebase;
+  }
+
+  const fallbackProvider = cleanString(firebaseUser?.provider);
+
+  if (fallbackProvider) {
+    return fallbackProvider;
+  }
+
+  return "password";
 }
 
 // ============================================================
@@ -230,7 +251,7 @@ function sanitizeUser(user) {
   };
 
   // ----------------------------------------------------------
-  // Remove MongoDB internal _id from API response
+  // MongoDB _id -> public id
   // ----------------------------------------------------------
 
   if (sanitizedUser._id) {
@@ -289,10 +310,20 @@ async function getUserByUid(users, uid) {
 //
 // Create or synchronize the authenticated Firebase user.
 //
-// This endpoint is used by AuthProvider after Firebase login.
+// Firebase ID token is the source of truth for:
+// - uid
+// - email
+// - emailVerified
+// - provider
+//
+// Client can provide:
+// - name
+// - phone
+// - photo
+// - profile
 //
 // Protected by Firebase ID token.
-//
+// ============================================================
 
 router.post("/", verifyToken, async (req, res) => {
   try {
@@ -312,7 +343,7 @@ router.post("/", verifyToken, async (req, res) => {
     // FIREBASE IDENTITY
     // ========================================================
 
-    const uid = firebaseUser?.uid;
+    const uid = cleanString(firebaseUser?.uid);
 
     if (!uid) {
       return res.status(401).json({
@@ -322,7 +353,7 @@ router.post("/", verifyToken, async (req, res) => {
       });
     }
 
-    const firebaseEmail = normalizeEmail(firebaseUser.email);
+    const firebaseEmail = normalizeEmail(firebaseUser?.email);
 
     if (!firebaseEmail) {
       return res.status(400).json({
@@ -346,9 +377,9 @@ router.post("/", verifyToken, async (req, res) => {
     // PROVIDER
     // ========================================================
 
-    const provider = cleanString(firebaseUser.provider) || "password";
+    const provider = getFirebaseProvider(firebaseUser);
 
-    const isGoogleProvider = provider === "google";
+    const isGoogleProvider = provider === "google.com" || provider === "google";
 
     // ========================================================
     // DEVELOPMENT DEBUG
@@ -378,29 +409,9 @@ router.post("/", verifyToken, async (req, res) => {
       });
     }
 
-    // --------------------------------------------------------
-    // Password user must provide name
-    // --------------------------------------------------------
-
-    if (!isGoogleProvider && !cleanName) {
-      return res.status(400).json({
-        success: false,
-        code: "validation/name-required",
-        message: "Name is required.",
-      });
-    }
-
     // ========================================================
     // PHONE VALIDATION
     // ========================================================
-
-    if (!isGoogleProvider && !cleanPhone) {
-      return res.status(400).json({
-        success: false,
-        code: "validation/phone-required",
-        message: "Phone number is required.",
-      });
-    }
 
     if (cleanPhone && cleanPhone.length !== MAX_PHONE_LENGTH) {
       return res.status(400).json({
@@ -453,12 +464,47 @@ router.post("/", verifyToken, async (req, res) => {
     }
 
     // ========================================================
-    // FIND EXISTING USER
+    // FIND EXISTING USER BY UID
     // ========================================================
 
-    const existingUser = await users.findOne({
-      uid,
-    });
+    const existingUser = await users.findOne({ uid });
+
+    // ========================================================
+    // EMAIL CONFLICT CHECK
+    // ========================================================
+
+    if (existingUser) {
+      const existingEmail = normalizeEmail(existingUser.email);
+
+      if (existingEmail && existingEmail !== firebaseEmail) {
+        const emailOwner = await users.findOne({
+          email: firebaseEmail,
+          uid: {
+            $ne: uid,
+          },
+        });
+
+        if (emailOwner) {
+          return res.status(409).json({
+            success: false,
+            code: "user/email-already-in-use",
+            message: "This email is already associated with another user.",
+          });
+        }
+      }
+    } else {
+      const emailOwner = await users.findOne({
+        email: firebaseEmail,
+      });
+
+      if (emailOwner) {
+        return res.status(409).json({
+          success: false,
+          code: "user/email-already-in-use",
+          message: "This email is already associated with another user.",
+        });
+      }
+    }
 
     // ========================================================
     // UPDATE EXISTING USER
@@ -473,7 +519,7 @@ router.post("/", verifyToken, async (req, res) => {
 
           provider,
 
-          emailVerified: firebaseUser.emailVerified === true,
+          emailVerified: firebaseUser?.emailVerified === true,
 
           lastLogin: now,
 
@@ -484,16 +530,12 @@ router.post("/", verifyToken, async (req, res) => {
       // ------------------------------------------------------
       // NAME
       // ------------------------------------------------------
-      //
-      // Never replace a real existing name with
-      // "School Member".
-      //
 
       if (cleanName) {
         updateOperation.$set.name = cleanName;
       } else if (
         !cleanString(existingUser.name) &&
-        cleanString(firebaseUser.name)
+        cleanString(firebaseUser?.name)
       ) {
         updateOperation.$set.name = cleanString(firebaseUser.name);
       }
@@ -507,21 +549,6 @@ router.post("/", verifyToken, async (req, res) => {
       }
 
       // ------------------------------------------------------
-      // Existing password account without phone
-      // ------------------------------------------------------
-
-      const existingPhone =
-        typeof existingUser.phone === "string" ? existingUser.phone.trim() : "";
-
-      if (!isGoogleProvider && !cleanPhone && !existingPhone) {
-        return res.status(400).json({
-          success: false,
-          code: "validation/phone-required",
-          message: "Phone number is required.",
-        });
-      }
-
-      // ------------------------------------------------------
       // PHOTO
       // ------------------------------------------------------
 
@@ -530,11 +557,15 @@ router.post("/", verifyToken, async (req, res) => {
       } else {
         const existingPhoto = cleanString(existingUser.photo);
 
-        const firebasePicture = cleanString(firebaseUser.picture);
+        const firebasePicture = cleanString(firebaseUser?.picture);
 
         if (existingPhoto) {
           updateOperation.$set.photo = existingPhoto;
-        } else if (firebasePicture && isValidHttpUrl(firebasePicture)) {
+        } else if (
+          firebasePicture &&
+          firebasePicture.length <= MAX_PHOTO_URL_LENGTH &&
+          isValidHttpUrl(firebasePicture)
+        ) {
           updateOperation.$set.photo = firebasePicture;
         }
       }
@@ -554,7 +585,7 @@ router.post("/", verifyToken, async (req, res) => {
       }
 
       // ------------------------------------------------------
-      // UPDATE
+      // UPDATE DATABASE
       // ------------------------------------------------------
 
       await users.updateOne(
@@ -582,7 +613,11 @@ router.post("/", verifyToken, async (req, res) => {
     // CREATE NEW USER
     // ========================================================
 
-    // Password users must have name and phone.
+    // Password users require name and phone.
+    //
+    // Google users may initially have no phone.
+    // They can complete their phone later.
+    // ========================================================
 
     if (!isGoogleProvider && !cleanName) {
       return res.status(400).json({
@@ -607,7 +642,7 @@ router.post("/", verifyToken, async (req, res) => {
 
       email: firebaseEmail,
 
-      name: cleanName || cleanString(firebaseUser.name) || "School Member",
+      name: cleanName || cleanString(firebaseUser?.name) || "School Member",
 
       phone: cleanPhone || null,
 
@@ -618,7 +653,7 @@ router.post("/", verifyToken, async (req, res) => {
 
       status: "active",
 
-      emailVerified: firebaseUser.emailVerified === true,
+      emailVerified: firebaseUser?.emailVerified === true,
 
       profile: profileValidation.profile || {},
 
@@ -633,7 +668,7 @@ router.post("/", verifyToken, async (req, res) => {
     // FIREBASE PHOTO
     // ========================================================
 
-    const firebasePicture = cleanString(firebaseUser.picture);
+    const firebasePicture = cleanString(firebaseUser?.picture);
 
     if (cleanPhoto) {
       newUser.photo = cleanPhoto;
@@ -715,7 +750,7 @@ router.post("/", verifyToken, async (req, res) => {
 //
 // Admin only.
 //
-// Supports:
+// Query parameters:
 //
 // ?page=1
 // ?limit=10
@@ -725,20 +760,28 @@ router.post("/", verifyToken, async (req, res) => {
 // ?sort=name-asc
 // ?sort=name-desc
 // ?sort=last-login
-//
+// ============================================================
 
 router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
   try {
     const { users } = getCollections();
+
+    if (!users) {
+      return res.status(500).json({
+        success: false,
+        code: "database/users-not-ready",
+        message: "Database is not ready.",
+      });
+    }
 
     const { page, limit, skip } = parsePagination(
       req.query.page,
       req.query.limit,
     );
 
-    // --------------------------------------------------------
-    // Search
-    // --------------------------------------------------------
+    // ------------------------------------------------------
+    // SEARCH
+    // ------------------------------------------------------
 
     const search = cleanString(req.query.search);
 
@@ -777,9 +820,9 @@ router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
       ];
     }
 
-    // --------------------------------------------------------
-    // Sorting
-    // --------------------------------------------------------
+    // ------------------------------------------------------
+    // SORTING
+    // ------------------------------------------------------
 
     let sortOption = {
       createdAt: -1,
@@ -818,9 +861,9 @@ router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
         break;
     }
 
-    // --------------------------------------------------------
-    // Count + data
-    // --------------------------------------------------------
+    // ------------------------------------------------------
+    // COUNT + DATA
+    // ------------------------------------------------------
 
     const [totalUsers, userList] = await Promise.all([
       users.countDocuments(query),
@@ -867,9 +910,26 @@ router.get("/", verifyToken, verifyUser, verifyAdmin, async (req, res) => {
   }
 });
 
+// ============================================================
+// GET /api/users/:email
+// ============================================================
+//
+// Admin can access any user.
+//
+// Normal user can access only their own email.
+// ============================================================
+
 router.get("/:email", verifyToken, verifyUser, async (req, res) => {
   try {
     const { users } = getCollections();
+
+    if (!users) {
+      return res.status(500).json({
+        success: false,
+        code: "database/users-not-ready",
+        message: "Database is not ready.",
+      });
+    }
 
     const requestedEmail = normalizeEmail(req.params.email);
 
@@ -885,9 +945,9 @@ router.get("/:email", verifyToken, verifyUser, async (req, res) => {
 
     const isAdmin = currentUser?.role === "admin";
 
-    // --------------------------------------------------------
-    // User access control
-    // --------------------------------------------------------
+    // ------------------------------------------------------
+    // ACCESS CONTROL
+    // ------------------------------------------------------
 
     if (!isAdmin && normalizeEmail(currentUser?.email) !== requestedEmail) {
       return res.status(403).json({
@@ -897,9 +957,9 @@ router.get("/:email", verifyToken, verifyUser, async (req, res) => {
       });
     }
 
-    // --------------------------------------------------------
-    // Find user
-    // --------------------------------------------------------
+    // ------------------------------------------------------
+    // FIND USER
+    // ------------------------------------------------------
 
     const user = await users.findOne(
       {
@@ -933,6 +993,14 @@ router.get("/:email", verifyToken, verifyUser, async (req, res) => {
   }
 });
 
+// ============================================================
+// PATCH /api/users/:id/role
+// ============================================================
+//
+// Admin only.
+// Admin cannot change their own role.
+// ============================================================
+
 router.patch(
   "/:id/role",
   verifyToken,
@@ -942,11 +1010,19 @@ router.patch(
     try {
       const { users } = getCollections();
 
+      if (!users) {
+        return res.status(500).json({
+          success: false,
+          code: "database/users-not-ready",
+          message: "Database is not ready.",
+        });
+      }
+
       const { id } = req.params;
 
-      // --------------------------------------------------------
-      // ObjectId
-      // --------------------------------------------------------
+      // ------------------------------------------------------
+      // OBJECT ID
+      // ------------------------------------------------------
 
       if (!isValidObjectId(id)) {
         return res.status(400).json({
@@ -958,9 +1034,9 @@ router.patch(
 
       const objectId = new ObjectId(id);
 
-      // --------------------------------------------------------
-      // Role
-      // --------------------------------------------------------
+      // ------------------------------------------------------
+      // ROLE
+      // ------------------------------------------------------
 
       const role = cleanString(req.body?.role);
 
@@ -972,9 +1048,9 @@ router.patch(
         });
       }
 
-      // --------------------------------------------------------
-      // Target user
-      // --------------------------------------------------------
+      // ------------------------------------------------------
+      // TARGET USER
+      // ------------------------------------------------------
 
       const targetUser = await users.findOne({
         _id: objectId,
@@ -988,9 +1064,9 @@ router.patch(
         });
       }
 
-      // --------------------------------------------------------
-      // Prevent self role change
-      // --------------------------------------------------------
+      // ------------------------------------------------------
+      // PREVENT SELF ROLE CHANGE
+      // ------------------------------------------------------
 
       if (targetUser.uid === req.user.uid) {
         return res.status(403).json({
@@ -1000,9 +1076,9 @@ router.patch(
         });
       }
 
-      // --------------------------------------------------------
-      // Already same role
-      // --------------------------------------------------------
+      // ------------------------------------------------------
+      // SAME ROLE
+      // ------------------------------------------------------
 
       if (targetUser.role === role) {
         return res.status(200).json({
@@ -1013,9 +1089,9 @@ router.patch(
         });
       }
 
-      // --------------------------------------------------------
-      // Update
-      // --------------------------------------------------------
+      // ------------------------------------------------------
+      // UPDATE
+      // ------------------------------------------------------
 
       await users.updateOne(
         {
@@ -1029,9 +1105,9 @@ router.patch(
         },
       );
 
-      // --------------------------------------------------------
-      // Retrieve updated user
-      // --------------------------------------------------------
+      // ------------------------------------------------------
+      // RETRIEVE UPDATED USER
+      // ------------------------------------------------------
 
       const updatedUser = await users.findOne(
         {
@@ -1060,6 +1136,14 @@ router.patch(
   },
 );
 
+// ============================================================
+// PATCH /api/users/:id/status
+// ============================================================
+//
+// Admin only.
+// Admin cannot change their own status.
+// ============================================================
+
 router.patch(
   "/:id/status",
   verifyToken,
@@ -1069,11 +1153,19 @@ router.patch(
     try {
       const { users } = getCollections();
 
+      if (!users) {
+        return res.status(500).json({
+          success: false,
+          code: "database/users-not-ready",
+          message: "Database is not ready.",
+        });
+      }
+
       const { id } = req.params;
 
-      // --------------------------------------------------------
-      // ObjectId
-      // --------------------------------------------------------
+      // ------------------------------------------------------
+      // OBJECT ID
+      // ------------------------------------------------------
 
       if (!isValidObjectId(id)) {
         return res.status(400).json({
@@ -1085,9 +1177,9 @@ router.patch(
 
       const objectId = new ObjectId(id);
 
-      // --------------------------------------------------------
-      // Status
-      // --------------------------------------------------------
+      // ------------------------------------------------------
+      // STATUS
+      // ------------------------------------------------------
 
       const status = cleanString(req.body?.status);
 
@@ -1101,9 +1193,9 @@ router.patch(
         });
       }
 
-      // --------------------------------------------------------
-      // Target user
-      // --------------------------------------------------------
+      // ------------------------------------------------------
+      // TARGET USER
+      // ------------------------------------------------------
 
       const targetUser = await users.findOne({
         _id: objectId,
@@ -1117,9 +1209,9 @@ router.patch(
         });
       }
 
-      // --------------------------------------------------------
-      // Prevent self status change
-      // --------------------------------------------------------
+      // ------------------------------------------------------
+      // PREVENT SELF STATUS CHANGE
+      // ------------------------------------------------------
 
       if (targetUser.uid === req.user.uid) {
         return res.status(403).json({
@@ -1129,9 +1221,9 @@ router.patch(
         });
       }
 
-      // --------------------------------------------------------
-      // Already same status
-      // --------------------------------------------------------
+      // ------------------------------------------------------
+      // SAME STATUS
+      // ------------------------------------------------------
 
       if (targetUser.status === status) {
         return res.status(200).json({
@@ -1142,9 +1234,9 @@ router.patch(
         });
       }
 
-      // --------------------------------------------------------
-      // Update
-      // --------------------------------------------------------
+      // ------------------------------------------------------
+      // UPDATE
+      // ------------------------------------------------------
 
       await users.updateOne(
         {
@@ -1158,9 +1250,9 @@ router.patch(
         },
       );
 
-      // --------------------------------------------------------
-      // Retrieve updated user
-      // --------------------------------------------------------
+      // ------------------------------------------------------
+      // RETRIEVE UPDATED USER
+      // ------------------------------------------------------
 
       const updatedUser = await users.findOne(
         {
@@ -1189,6 +1281,16 @@ router.patch(
   },
 );
 
+// ============================================================
+// DELETE /api/users/:id
+// ============================================================
+//
+// Admin only.
+//
+// This deletes the MongoDB user document.
+// It does NOT delete the Firebase Authentication account.
+// ============================================================
+
 router.delete(
   "/:id",
   verifyToken,
@@ -1198,11 +1300,19 @@ router.delete(
     try {
       const { users } = getCollections();
 
+      if (!users) {
+        return res.status(500).json({
+          success: false,
+          code: "database/users-not-ready",
+          message: "Database is not ready.",
+        });
+      }
+
       const { id } = req.params;
 
-      // --------------------------------------------------------
-      // ObjectId
-      // --------------------------------------------------------
+      // ------------------------------------------------------
+      // OBJECT ID
+      // ------------------------------------------------------
 
       if (!isValidObjectId(id)) {
         return res.status(400).json({
@@ -1214,9 +1324,9 @@ router.delete(
 
       const objectId = new ObjectId(id);
 
-      // --------------------------------------------------------
-      // Target user
-      // --------------------------------------------------------
+      // ------------------------------------------------------
+      // TARGET USER
+      // ------------------------------------------------------
 
       const targetUser = await users.findOne({
         _id: objectId,
@@ -1230,9 +1340,9 @@ router.delete(
         });
       }
 
-      // --------------------------------------------------------
-      // Prevent self deletion
-      // --------------------------------------------------------
+      // ------------------------------------------------------
+      // PREVENT SELF DELETION
+      // ------------------------------------------------------
 
       if (targetUser.uid === req.user.uid) {
         return res.status(403).json({
@@ -1242,9 +1352,9 @@ router.delete(
         });
       }
 
-      // --------------------------------------------------------
-      // Delete MongoDB user
-      // --------------------------------------------------------
+      // ------------------------------------------------------
+      // DELETE MONGODB USER
+      // ------------------------------------------------------
 
       const result = await users.deleteOne({
         _id: objectId,

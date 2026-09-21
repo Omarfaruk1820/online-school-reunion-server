@@ -23,7 +23,12 @@ const app = express();
 
 const isProduction = process.env.NODE_ENV === "production";
 
-if (isProduction) {
+const isVercel = process.env.VERCEL === "1" || Boolean(process.env.VERCEL);
+
+// Trust proxy when running behind a reverse proxy
+// such as Vercel, Render, Railway, Nginx, etc.
+
+if (isProduction || isVercel) {
   app.set("trust proxy", 1);
 }
 
@@ -31,37 +36,29 @@ if (isProduction) {
 // CORS
 // ============================================================
 
-const clientUrls = (process.env.CLIENT_URL || "")
+const allowedOrigins = (process.env.CLIENT_URL || "")
   .split(",")
-  .map((url) => url.trim().replace(/\/$/, ""))
-  .filter(Boolean);
+  .map((origin) => origin.trim())
+  .filter(Boolean)
+  .map((origin) => origin.replace(/\/+$/, ""));
 
-console.log("Allowed CORS origins:", clientUrls);
+console.log("Allowed CORS origins:", allowedOrigins);
 
 app.use(
   cors({
     origin: (origin, callback) => {
-      // --------------------------------------------------------
-      // Requests without Origin
-      // --------------------------------------------------------
+      // Allow requests that do not contain an Origin header.
+      // Example: server-to-server requests, health checks, etc.
 
       if (!origin) {
         return callback(null, true);
       }
 
-      const normalizedOrigin = origin.trim().replace(/\/$/, "");
+      const normalizedOrigin = origin.trim().replace(/\/+$/, "");
 
-      // --------------------------------------------------------
-      // Configured frontend origin
-      // --------------------------------------------------------
-
-      if (clientUrls.includes(normalizedOrigin)) {
+      if (allowedOrigins.includes(normalizedOrigin)) {
         return callback(null, true);
       }
-
-      // --------------------------------------------------------
-      // Block unknown origin
-      // --------------------------------------------------------
 
       console.warn(`CORS blocked origin: ${origin}`);
 
@@ -112,6 +109,10 @@ app.get("/", (req, res) => {
   });
 });
 
+// ============================================================
+// HEALTH CHECK
+// ============================================================
+
 app.get("/api/health", (req, res) => {
   return res.status(200).json({
     success: true,
@@ -125,13 +126,14 @@ app.get("/api/health", (req, res) => {
 // DATABASE INITIALIZATION
 // ============================================================
 //
-// All API routes below this middleware will use MongoDB.
+// Only API requests need MongoDB.
 //
-// connectDB() is cached, so MongoDB is not reconnected for
-// every request.
+// connectDB() is cached in your db.js, so this does not
+// create a new MongoDB connection for every request.
 //
+// ============================================================
 
-app.use(async (req, res, next) => {
+app.use("/api", async (req, res, next) => {
   try {
     await connectDB();
 
@@ -146,10 +148,6 @@ app.use(async (req, res, next) => {
     });
   }
 });
-
-// ============================================================
-// AUTH ROUTES
-// ============================================================
 
 // ============================================================
 // AUTH ROUTES
@@ -179,13 +177,11 @@ console.log("Registering reunion events routes...");
 
 app.use(
   "/api/reunion-events",
-
   (req, res, next) => {
     console.log(`REUNION EVENTS REQUEST: ${req.method} ${req.originalUrl}`);
 
     return next();
   },
-
   reunionEventsRoutes,
 );
 
@@ -199,13 +195,11 @@ console.log("Registering registrations routes...");
 
 app.use(
   "/api/registrations",
-
   (req, res, next) => {
     console.log(`REGISTRATIONS REQUEST: ${req.method} ${req.originalUrl}`);
 
     return next();
   },
-
   registrationsRoutes,
 );
 
@@ -248,10 +242,10 @@ app.use((err, req, res, next) => {
   // Determine status code
   // ----------------------------------------------------------
 
-  const statusCode = err.statusCode || err.status || 500;
+  const statusCode = Number(err.statusCode || err.status) || 500;
 
   // ----------------------------------------------------------
-  // Hide internal error details in production
+  // Production-safe error message
   // ----------------------------------------------------------
 
   const message =
@@ -267,19 +261,35 @@ app.use((err, req, res, next) => {
 });
 
 // ============================================================
-// LOCAL DEVELOPMENT SERVER
+// SERVER
 // ============================================================
 
 const PORT = Number(process.env.PORT) || 5000;
 
-if (!isProduction) {
+// ============================================================
+// LOCAL DEVELOPMENT
+// ============================================================
+//
+// In local development:
+// npm run dev
+//
+// starts:
+// http://localhost:5000
+//
+// ============================================================
+
+if (!isProduction && !isVercel) {
   app.listen(PORT, () => {
     console.log(`School Reunion Server is running on port ${PORT}`);
   });
 }
 
 // ============================================================
-// VERCEL / SERVERLESS EXPORT
+// EXPORT
+// ============================================================
+//
+// Keeping this export is useful if your deployment platform
+// imports the Express app directly.
 // ============================================================
 
 export default app;
