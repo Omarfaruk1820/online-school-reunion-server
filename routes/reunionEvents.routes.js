@@ -2,8 +2,8 @@ import express from "express";
 import { ObjectId } from "mongodb";
 
 import { connectDB, getCollections } from "../config/db.js";
-import  verifyToken  from "../middleware/verifyToken.js";
-import verifyAdmin  from "../middleware/verifyAdmin.js";
+import verifyToken from "../middleware/verifyToken.js";
+import verifyAdmin from "../middleware/verifyAdmin.js";
 
 const router = express.Router();
 

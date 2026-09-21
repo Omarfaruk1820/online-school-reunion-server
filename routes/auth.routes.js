@@ -1,3 +1,5 @@
+// api/routes/auth.routes.js
+
 import express from "express";
 
 import verifyToken from "../middleware/verifyToken.js";
@@ -57,9 +59,16 @@ const PROFILE_FIELD_MAX_LENGTHS = {
 // USER PROJECTION
 // ============================================================
 //
-// Only return fields that the frontend actually needs.
+// Only return fields that the frontend is allowed to receive.
 //
-// Sensitive/server-controlled fields are intentionally excluded.
+// Never expose:
+// - internal/private MongoDB fields
+// - password-like fields
+// - authentication secrets
+// - sensitive server-only metadata
+//
+// Firebase identity remains controlled by Firebase.
+// Role/status remain controlled by the server.
 //
 
 const USER_PROJECTION = {
@@ -88,7 +97,13 @@ const normalizeString = (value) => {
 };
 
 const normalizeEmail = (value) => {
-  return typeof value === "string" ? value.trim().toLowerCase() : null;
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const email = value.trim().toLowerCase();
+
+  return email || null;
 };
 
 const isValidBangladeshiPhone = (phone) => {
@@ -130,6 +145,14 @@ const getSafeUser = async (users, uid) => {
   );
 };
 
+const getDatabaseErrorResponse = (res) => {
+  return res.status(500).json({
+    success: false,
+    code: "database/users-not-ready",
+    message: "Database is not ready.",
+  });
+};
+
 const validateProfileField = (field, value) => {
   if (typeof value !== "string") {
     return `${field} must be a string.`;
@@ -157,6 +180,7 @@ const validateProfileField = (field, value) => {
 const buildProfileUpdate = (profile) => {
   const updateData = {};
 
+  // Profile not included in request.
   if (profile === undefined) {
     return {
       updateData,
@@ -164,6 +188,7 @@ const buildProfileUpdate = (profile) => {
     };
   }
 
+  // Profile must be a plain object.
   if (
     profile === null ||
     typeof profile !== "object" ||
@@ -200,51 +225,86 @@ const buildProfileUpdate = (profile) => {
   };
 };
 
+const getFirebaseProvider = (firebaseUser) => {
+  if (
+    typeof firebaseUser?.provider === "string" &&
+    firebaseUser.provider.trim()
+  ) {
+    return firebaseUser.provider.trim();
+  }
+
+  return "password";
+};
+
+const getFirebasePhoto = (firebaseUser) => {
+  if (typeof firebaseUser?.picture !== "string") {
+    return null;
+  }
+
+  const photo = firebaseUser.picture.trim();
+
+  if (!photo) {
+    return null;
+  }
+
+  if (photo.length > MAX_PHOTO_URL_LENGTH) {
+    return null;
+  }
+
+  if (!isValidHttpUrl(photo)) {
+    return null;
+  }
+
+  return photo;
+};
+
 // ============================================================
-// REGISTER USER
-// ============================================================
-//
 // POST /api/auth/register
+// ============================================================
 //
 // Firebase Authentication must already be completed on the
 // frontend.
 //
-// Frontend sends:
-//
-// Authorization: Bearer <firebase-id-token>
+// Authorization:
+// Bearer <firebase-id-token>
 //
 // Body:
-//
 // {
 //   "name": "...",
 //   "phone": "..."
 // }
 //
-// Server controls:
-//
+// Firebase controls:
 // - uid
 // - email
+// - emailVerified
 // - provider
+//
+// Server controls:
 // - role
 // - status
-// - emailVerified
 // - timestamps
+// - MongoDB user identity
 //
-// User cannot submit their own role/status.
-//
+// User cannot submit:
+// - uid
+// - email
+// - role
+// - status
+// - provider
+// - emailVerified
+// ============================================================
 
 router.post("/register", verifyToken, async (req, res) => {
   try {
     const { users } = getCollections();
 
     if (!users) {
-      console.error("REGISTER - Users collection is not initialized.");
+      console.error(
+        "POST /api/auth/register - Users collection is not initialized.",
+      );
 
-      return res.status(500).json({
-        success: false,
-        code: "database/users-not-ready",
-        message: "Database is not ready.",
-      });
+      return getDatabaseErrorResponse(res);
     }
 
     const firebaseUser = req.user;
@@ -265,14 +325,6 @@ router.post("/register", verifyToken, async (req, res) => {
 
     const email = normalizeEmail(firebaseUser.email);
 
-    const name = normalizeString(req.body?.name);
-
-    const phone = normalizeString(req.body?.phone);
-
-    // --------------------------------------------------------
-    // Validate email
-    // --------------------------------------------------------
-
     if (!email) {
       return res.status(400).json({
         success: false,
@@ -282,7 +334,14 @@ router.post("/register", verifyToken, async (req, res) => {
     }
 
     // --------------------------------------------------------
-    // Validate name
+    // Request data
+    // --------------------------------------------------------
+
+    const name = normalizeString(req.body?.name);
+    const phone = normalizeString(req.body?.phone);
+
+    // --------------------------------------------------------
+    // Name validation
     // --------------------------------------------------------
 
     if (!name) {
@@ -302,7 +361,7 @@ router.post("/register", verifyToken, async (req, res) => {
     }
 
     // --------------------------------------------------------
-    // Validate phone
+    // Phone validation
     // --------------------------------------------------------
 
     if (!phone) {
@@ -330,41 +389,74 @@ router.post("/register", verifyToken, async (req, res) => {
     }
 
     // --------------------------------------------------------
-    // Check existing user
+    // Check existing Firebase UID
     // --------------------------------------------------------
 
-    const existingUser = await users.findOne({
-      uid,
-    });
+    const existingUser = await users.findOne({ uid });
 
     if (existingUser) {
+      const existingEmail = normalizeEmail(existingUser.email);
+
+      // ------------------------------------------------------
+      // Firebase email must remain the source of truth.
+      //
+      // Do not silently change MongoDB email here.
+      // ------------------------------------------------------
+
+      if (existingEmail && existingEmail !== email) {
+        console.error(
+          "POST /api/auth/register - Firebase/MongoDB email mismatch.",
+          {
+            uid,
+            firebaseEmail: email,
+            databaseEmail: existingEmail,
+          },
+        );
+
+        return res.status(409).json({
+          success: false,
+          code: "auth/email-mismatch",
+          message:
+            "The authenticated account does not match the existing user account.",
+        });
+      }
+
       const now = new Date();
 
       // ------------------------------------------------------
-      // Update only login-related fields.
+      // Existing users:
       //
-      // DO NOT overwrite:
+      // Update only authentication/login-related fields.
       //
+      // Never overwrite:
+      // - name
+      // - phone
+      // - photo
+      // - profile
       // - role
       // - status
-      // - profile
-      // - phone
-      // - name
-      // - manually edited photo
       // ------------------------------------------------------
 
       await users.updateOne(
         { uid },
         {
           $set: {
+            emailVerified: firebaseUser.emailVerified === true,
             lastLogin: now,
             updatedAt: now,
-            emailVerified: firebaseUser.emailVerified === true,
           },
         },
       );
 
       const currentUser = await getSafeUser(users, uid);
+
+      if (!currentUser) {
+        return res.status(404).json({
+          success: false,
+          code: "user/not-found",
+          message: "User account could not be found.",
+        });
+      }
 
       return res.status(200).json({
         success: true,
@@ -378,28 +470,13 @@ router.post("/register", verifyToken, async (req, res) => {
     // Firebase profile photo
     // --------------------------------------------------------
 
-    let firebasePhoto = null;
-
-    if (typeof firebaseUser.picture === "string") {
-      const cleanPicture = firebaseUser.picture.trim();
-
-      if (
-        cleanPicture &&
-        cleanPicture.length <= MAX_PHOTO_URL_LENGTH &&
-        isValidHttpUrl(cleanPicture)
-      ) {
-        firebasePhoto = cleanPicture;
-      }
-    }
+    const firebasePhoto = getFirebasePhoto(firebaseUser);
 
     // --------------------------------------------------------
     // Provider
     // --------------------------------------------------------
 
-    const provider =
-      typeof firebaseUser.provider === "string" && firebaseUser.provider.trim()
-        ? firebaseUser.provider.trim()
-        : "password";
+    const provider = getFirebaseProvider(firebaseUser);
 
     // --------------------------------------------------------
     // Create user
@@ -409,11 +486,8 @@ router.post("/register", verifyToken, async (req, res) => {
 
     const newUser = {
       uid,
-
       email,
-
       name,
-
       phone,
 
       photo: firebasePhoto,
@@ -425,7 +499,6 @@ router.post("/register", verifyToken, async (req, res) => {
       // ------------------------------------------------------
 
       role: "student",
-
       status: "active",
 
       emailVerified: firebaseUser.emailVerified === true,
@@ -441,9 +514,7 @@ router.post("/register", verifyToken, async (req, res) => {
       // ------------------------------------------------------
 
       createdAt: now,
-
       updatedAt: now,
-
       lastLogin: now,
     };
 
@@ -508,19 +579,19 @@ router.post("/register", verifyToken, async (req, res) => {
 });
 
 // ============================================================
-// GET CURRENT USER
+// GET /api/auth/me
 // ============================================================
 //
-// GET /api/auth/me
+// Returns the currently authenticated MongoDB user.
 //
-// Middleware order:
+// Middleware:
 //
 // verifyToken
 //      ↓
 // verifyUser
 //      ↓
 // route
-//
+// ============================================================
 
 router.get("/me", verifyToken, verifyUser, (req, res) => {
   return res.status(200).json({
@@ -530,20 +601,25 @@ router.get("/me", verifyToken, verifyUser, (req, res) => {
 });
 
 // ============================================================
-// UPDATE CURRENT USER
+// PATCH /api/auth/me
 // ============================================================
 //
-// PATCH /api/auth/me
-//
 // Allowed:
-//
 // - name
 // - phone
 // - photo
 // - profile
 //
-// NOT allowed:
+// Profile fields:
+// - batch
+// - className
+// - department
+// - profession
+// - organization
+// - address
+// - bio
 //
+// Never allowed:
 // - uid
 // - email
 // - role
@@ -551,27 +627,26 @@ router.get("/me", verifyToken, verifyUser, (req, res) => {
 // - provider
 // - emailVerified
 // - createdAt
-//
+// - lastLogin
+// ============================================================
 
 router.patch("/me", verifyToken, verifyUser, async (req, res) => {
   try {
     const { users } = getCollections();
 
     if (!users) {
-      console.error("UPDATE PROFILE - Users collection is not initialized.");
+      console.error(
+        "PATCH /api/auth/me - Users collection is not initialized.",
+      );
 
-      return res.status(500).json({
-        success: false,
-        code: "database/users-not-ready",
-        message: "Database is not ready.",
-      });
+      return getDatabaseErrorResponse(res);
     }
 
     const uid = req.user?.uid;
 
-    // --------------------------------------------------------
+    // ------------------------------------------------------
     // Authentication
-    // --------------------------------------------------------
+    // ------------------------------------------------------
 
     if (!uid) {
       return res.status(401).json({
@@ -581,19 +656,21 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       });
     }
 
-    const { name, phone, photo, profile } = req.body || {};
+    const body = req.body && typeof req.body === "object" ? req.body : {};
 
-    // --------------------------------------------------------
+    const { name, phone, photo, profile } = body;
+
+    // ------------------------------------------------------
     // Base update
-    // --------------------------------------------------------
+    // ------------------------------------------------------
 
     const updateData = {
       updatedAt: new Date(),
     };
 
-    // ========================================================
+    // ======================================================
     // NAME
-    // ========================================================
+    // ======================================================
 
     if (name !== undefined) {
       if (typeof name !== "string") {
@@ -625,9 +702,9 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       updateData.name = cleanName;
     }
 
-    // ========================================================
+    // ======================================================
     // PHONE
-    // ========================================================
+    // ======================================================
 
     if (phone !== undefined) {
       if (typeof phone !== "string") {
@@ -667,9 +744,9 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       updateData.phone = cleanPhone;
     }
 
-    // ========================================================
+    // ======================================================
     // PHOTO
-    // ========================================================
+    // ======================================================
 
     if (photo !== undefined) {
       if (typeof photo !== "string") {
@@ -698,13 +775,13 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
         });
       }
 
-      // Empty photo URL removes photo.
+      // Empty string removes the photo.
       updateData.photo = cleanPhoto || null;
     }
 
-    // ========================================================
+    // ======================================================
     // PROFILE
-    // ========================================================
+    // ======================================================
 
     const { updateData: profileUpdate, error: profileError } =
       buildProfileUpdate(profile);
@@ -719,9 +796,12 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
 
     Object.assign(updateData, profileUpdate);
 
-    // ========================================================
+    // ======================================================
     // CHECK ACTUAL CHANGES
-    // ========================================================
+    // ======================================================
+
+    // updatedAt is always present.
+    // If nothing else was supplied, there is nothing to update.
 
     if (Object.keys(updateData).length === 1) {
       return res.status(400).json({
@@ -731,9 +811,9 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       });
     }
 
-    // ========================================================
+    // ======================================================
     // UPDATE MONGODB
-    // ========================================================
+    // ======================================================
 
     const result = await users.updateOne(
       { uid },
@@ -742,9 +822,9 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       },
     );
 
-    // --------------------------------------------------------
+    // ------------------------------------------------------
     // User not found
-    // --------------------------------------------------------
+    // ------------------------------------------------------
 
     if (result.matchedCount === 0) {
       return res.status(404).json({
@@ -754,9 +834,9 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       });
     }
 
-    // ========================================================
+    // ======================================================
     // GET UPDATED USER
-    // ========================================================
+    // ======================================================
 
     const updatedUser = await getSafeUser(users, uid);
 
@@ -768,9 +848,9 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
       });
     }
 
-    // ========================================================
+    // ======================================================
     // RESPONSE
-    // ========================================================
+    // ======================================================
 
     return res.status(200).json({
       success: true,
@@ -780,10 +860,6 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
     });
   } catch (error) {
     console.error("PATCH /api/auth/me error:", error);
-
-    // --------------------------------------------------------
-    // MongoDB duplicate key
-    // --------------------------------------------------------
 
     if (error?.code === 11000) {
       return res.status(409).json({
@@ -802,30 +878,27 @@ router.patch("/me", verifyToken, verifyUser, async (req, res) => {
 });
 
 // ============================================================
-// LOGOUT
-// ============================================================
-//
 // POST /api/auth/logout
-//
-// IMPORTANT:
+// ============================================================
 //
 // Firebase logout itself must happen on the frontend:
 //
 // signOut(auth)
 //
-// This backend endpoint only records the user's activity.
-//
+// This endpoint only records the logout activity.
+// It does NOT invalidate the Firebase ID token.
+// ============================================================
 
 router.post("/logout", verifyToken, async (req, res) => {
   try {
     const { users } = getCollections();
 
     if (!users) {
-      return res.status(500).json({
-        success: false,
-        code: "database/users-not-ready",
-        message: "Database is not ready.",
-      });
+      console.error(
+        "POST /api/auth/logout - Users collection is not initialized.",
+      );
+
+      return getDatabaseErrorResponse(res);
     }
 
     const uid = req.user?.uid;

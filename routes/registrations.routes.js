@@ -2,77 +2,43 @@ import express from "express";
 import crypto from "crypto";
 import { ObjectId } from "mongodb";
 
-import { connectDB, getCollections } from "../config/db.js";
-import verifyToken from "../middleware/verifyToken.js";
+import { getCollections } from "../config/db.js";
+import verifyToken  from "../middleware/verifyToken.js";
 
 const router = express.Router();
 
-/* ============================================================
+/* =========================================================
    CONSTANTS
-============================================================ */
+========================================================= */
 
-const VALID_CLASS_LEVELS = new Set(["6", "7", "8", "9", "10"]);
+const VALID_CLASS_LEVELS = ["6", "7", "8", "9", "10"];
 
-const VALID_STUDENT_TYPES = new Set(["current", "alumni"]);
+const VALID_STUDENT_TYPES = ["current", "alumni"];
 
-const VALID_DEPARTMENTS = new Set([
-  "science",
-  "commerce",
-  "humanities",
-  "vocational",
-]);
+const VALID_DEPARTMENTS = ["science", "commerce", "humanities", "vocational"];
 
-/*
- * Standard T-shirt size naming.
- *
- * Frontend uses 2XL, so backend also uses 2XL.
- */
-const VALID_TSHIRT_SIZES = new Set(["XS", "S", "M", "L", "XL", "2XL", "3XL"]);
+const VALID_TSHIRT_SIZES = ["XS", "S", "M", "L", "XL", "2XL", "3XL"];
+
+const SENIOR_CLASS_LEVELS = ["9", "10"];
+
+const PHONE_REGEX = /^01[3-9]\d{8}$/;
 
 const MIN_BATCH_YEAR = 1950;
 const MAX_BATCH_YEAR = 2100;
 
-/* ============================================================
-   NORMALIZERS
-============================================================ */
+/* =========================================================
+   HELPERS
+========================================================= */
 
-const normalizeString = (value) => {
-  if (typeof value !== "string") {
-    return "";
-  }
-
-  return value.trim();
+const isSeniorClass = (classLevel) => {
+  return SENIOR_CLASS_LEVELS.includes(String(classLevel));
 };
 
-const normalizeEmail = (value) => {
-  return normalizeString(value).toLowerCase();
-};
+const normalizeTshirtSize = (size) => {
+  if (!size) return null;
 
-const normalizeStudentType = (value) => {
-  return normalizeString(value).toLowerCase();
-};
+  const normalized = String(size).trim().toUpperCase();
 
-const normalizeClassLevel = (value) => {
-  if (value === null || value === undefined || value === "") {
-    return "";
-  }
-
-  return String(value).trim();
-};
-
-const normalizeDepartment = (value) => {
-  return normalizeString(value).toLowerCase();
-};
-
-const normalizeTshirtSize = (value) => {
-  const normalized = normalizeString(value).toUpperCase();
-
-  /*
-   * Backward compatibility:
-   *
-   * Old data/frontend may use XXL.
-   * Internally we standardize it to 2XL.
-   */
   if (normalized === "XXL") {
     return "2XL";
   }
@@ -80,62 +46,66 @@ const normalizeTshirtSize = (value) => {
   return normalized;
 };
 
-const normalizePhone = (value) => {
-  return normalizeString(value).replace(/\s+/g, "");
+const normalizeStudentType = (studentType) => {
+  if (!studentType) return null;
+
+  return String(studentType).trim().toLowerCase();
 };
 
-const normalizeBatchYear = (value) => {
-  if (value === null || value === undefined || value === "") {
+const normalizeDepartment = (department) => {
+  if (!department) return null;
+
+  return String(department).trim().toLowerCase();
+};
+
+const normalizeClassLevel = (classLevel) => {
+  if (classLevel === null || classLevel === undefined) {
     return null;
   }
 
-  const year = Number(value);
-
-  if (!Number.isInteger(year)) {
-    return null;
-  }
-
-  return year;
-};
-
-/* ============================================================
-   VALIDATORS
-============================================================ */
-
-const isValidPhone = (phone) => {
-  return /^01[3-9]\d{8}$/.test(phone);
-};
-
-const isValidObjectId = (value) => {
-  return ObjectId.isValid(value);
+  return String(classLevel).trim();
 };
 
 const toObjectId = (value) => {
-  if (!isValidObjectId(value)) {
+  if (!value) return null;
+
+  if (value instanceof ObjectId) {
+    return value;
+  }
+
+  const stringValue = String(value);
+
+  if (!ObjectId.isValid(stringValue)) {
     return null;
   }
 
-  return new ObjectId(value);
+  return new ObjectId(stringValue);
 };
 
-/* ============================================================
-   SERIALIZER
-============================================================ */
+const createRegistrationId = () => {
+  const randomPart = crypto.randomBytes(5).toString("hex").toUpperCase();
 
+  return `SR-2027-${randomPart}`;
+};
+
+const createQrToken = () => {
+  return crypto.randomBytes(24).toString("hex");
+};
+
+/**
+ * Converts MongoDB documents to JSON-friendly objects.
+ *
+ * Important:
+ * We intentionally do NOT expose sensitive/internal fields here.
+ */
 const serializeDocument = (document) => {
-  if (!document) {
-    return null;
-  }
+  if (!document) return null;
 
   return {
     ...document,
 
     _id: document._id?.toString?.() || document._id,
 
-    /*
-     * Convert nested MongoDB ObjectId values
-     * to strings before sending to frontend.
-     */
     reunion: document.reunion
       ? {
           ...document.reunion,
@@ -151,208 +121,250 @@ const serializeDocument = (document) => {
   };
 };
 
-/* ============================================================
-   REGISTRATION ID
-============================================================ */
+const serializeEvent = (event) => {
+  if (!event) return null;
 
-const createRegistrationId = () => {
-  const randomPart = crypto.randomBytes(5).toString("hex").toUpperCase();
+  return {
+    ...event,
 
-  return `SR-2027-${randomPart}`;
+    _id: event._id?.toString?.() || event._id,
+  };
 };
 
-/* ============================================================
-   AUTH HELPERS
-============================================================ */
+const serializeGiftPackage = (giftPackage) => {
+  if (!giftPackage) return null;
 
-const getAuthenticatedUser = (req) => {
-  return req.user || req.userData || null;
+  return {
+    ...giftPackage,
+
+    _id: giftPackage._id?.toString?.() || giftPackage._id,
+
+    eventId: giftPackage.eventId?.toString?.() || giftPackage.eventId,
+  };
 };
 
-const getAuthenticatedUid = (req) => {
-  const user = getAuthenticatedUser(req);
-
-  return normalizeString(user?.uid);
-};
-
-const getAuthenticatedEmail = (req) => {
-  const user = getAuthenticatedUser(req);
-
-  return normalizeEmail(user?.email);
-};
-
-/* ============================================================
-   EVENT HELPERS
-============================================================ */
-
-const isRegistrationDeadlinePassed = (event) => {
-  if (!event?.registrationDeadline) {
-    return false;
+/**
+ * Find the active reunion package.
+ *
+ * Supports:
+ * - packageId
+ * - id
+ * - MongoDB _id
+ */
+const findGiftPackage = async (giftPackages, packageId, eventId = null) => {
+  if (!giftPackages || !packageId) {
+    return null;
   }
 
-  const deadline = new Date(event.registrationDeadline);
+  const filters = [
+    {
+      packageId,
+      active: {
+        $ne: false,
+      },
+    },
 
-  if (Number.isNaN(deadline.getTime())) {
-    return false;
+    {
+      id: packageId,
+      active: {
+        $ne: false,
+      },
+    },
+  ];
+
+  const objectId = toObjectId(packageId);
+
+  if (objectId) {
+    filters.push({
+      _id: objectId,
+      active: {
+        $ne: false,
+      },
+    });
   }
 
-  return new Date() > deadline;
+  let giftPackage = await giftPackages.findOne({
+    $or: filters,
+  });
+
+  if (!giftPackage) {
+    return null;
+  }
+
+  /*
+   * A package with eventId = null is treated as a
+   * general package and can be used by the reunion event.
+   *
+   * If package has a specific eventId, make sure it matches.
+   */
+  if (
+    giftPackage.eventId !== null &&
+    giftPackage.eventId !== undefined &&
+    giftPackage.eventId !== ""
+  ) {
+    const packageEventId =
+      giftPackage.eventId?.toString?.() || String(giftPackage.eventId);
+
+    const currentEventId = eventId?.toString?.() || String(eventId || "");
+
+    if (packageEventId !== currentEventId) {
+      return null;
+    }
+  }
+
+  return giftPackage;
 };
 
-const isEventRegistrationOpen = (event) => {
+/**
+ * Finds the currently published/open reunion event.
+ */
+const findActiveReunionEvent = async (reunionEvents) => {
+  if (!reunionEvents) {
+    return null;
+  }
+
+  return reunionEvents.findOne(
+    {
+      status: {
+        $in: ["published", "active"],
+      },
+
+      registrationOpen: true,
+    },
+    {
+      sort: {
+        eventDate: 1,
+        createdAt: -1,
+      },
+    },
+  );
+};
+
+/**
+ * Check whether registration is still open.
+ */
+const isRegistrationOpen = (event) => {
   if (!event) {
     return false;
   }
 
-  /*
-   * Primary registration switch.
-   */
-  if (event.registrationOpen !== true) {
+  if (event.registrationOpen === false) {
     return false;
   }
 
-  /*
-   * Nested registration setting.
-   *
-   * Missing registration.open is treated as open.
-   */
   if (event.registration?.open === false) {
     return false;
   }
 
-  if (isRegistrationDeadlinePassed(event)) {
+  if (
+    event.registrationDeadline &&
+    new Date(event.registrationDeadline).getTime() < Date.now()
+  ) {
     return false;
   }
 
   return true;
 };
 
-/* ============================================================
-   GIFT PACKAGE FINDER
-============================================================ */
-
-const findGiftPackage = async (giftPackages, packageId) => {
-  const normalizedPackageId = normalizeString(packageId);
-
-  if (!normalizedPackageId) {
-    return null;
-  }
-
-  const conditions = [
-    {
-      id: normalizedPackageId,
-    },
-
-    {
-      packageId: normalizedPackageId,
-    },
-  ];
-
-  /*
-   * Support MongoDB ObjectId as package identifier.
-   */
-  if (isValidObjectId(normalizedPackageId)) {
-    conditions.unshift({
-      _id: new ObjectId(normalizedPackageId),
-    });
-  }
-
-  return giftPackages.findOne({
-    $or: conditions,
-
-    active: {
-      $ne: false,
-    },
-  });
-};
-
-/* ============================================================
+/* =========================================================
    TEST ROUTE
-============================================================ */
+========================================================= */
 
 router.get("/test", (req, res) => {
   return res.status(200).json({
     success: true,
     message: "Registrations route is working.",
-    route: "/api/registrations",
-    collection: "registrations",
   });
 });
 
-/* ============================================================
+/* =========================================================
+   GET ACTIVE REUNION EVENT
    GET /api/registrations
-   LOAD ACTIVE REUNION EVENT
-============================================================ */
+========================================================= */
 
 router.get("/", async (req, res) => {
   try {
-    await connectDB();
-
-    const { reunionEvents } = getCollections();
+    const { reunionEvents, giftPackages } = getCollections();
 
     if (!reunionEvents) {
       return res.status(500).json({
         success: false,
-        code: "database/reunion-events-collection-not-found",
-        message: "reunionEvents collection is not available.",
+        message: "Reunion events collection is not available.",
+        code: "database/collection-not-found",
       });
     }
 
-    /*
-     * Only return an event where registration is open.
-     */
-    const event = await reunionEvents.findOne(
-      {
-        registrationOpen: true,
-        status: {
-          $in: ["published", "active"],
-        },
-      },
-      {
-        sort: {
-          eventDate: 1,
-          createdAt: -1,
-        },
-      },
-    );
+    const event = await findActiveReunionEvent(reunionEvents);
 
     if (!event) {
       return res.status(404).json({
         success: false,
-        code: "reunion/event-not-found",
-        message: "No active reunion event was found.",
+        message: "No active reunion event is available.",
+        code: "event/not-found",
       });
+    }
+
+    let packageOptions = [];
+
+    if (giftPackages) {
+      packageOptions = await giftPackages
+        .find({
+          active: {
+            $ne: false,
+          },
+
+          $or: [
+            {
+              eventId: null,
+            },
+
+            {
+              eventId: {
+                $exists: false,
+              },
+            },
+
+            {
+              eventId: event._id,
+            },
+          ],
+        })
+        .sort({
+          createdAt: 1,
+        })
+        .toArray();
     }
 
     return res.status(200).json({
       success: true,
-      data: serializeDocument(event),
+
+      data: {
+        ...serializeEvent(event),
+
+        packages: packageOptions.map(serializeGiftPackage),
+      },
     });
   } catch (error) {
-    console.error("GET /api/registrations error:", {
-      name: error?.name,
-      message: error?.message,
-      code: error?.code,
-    });
+    console.error("GET /api/registrations error:", error);
 
     return res.status(500).json({
       success: false,
-      code: "registration/event-load-failed",
-      message: "Failed to load reunion information.",
+      message: "Failed to load reunion event.",
+      code: "registrations/event-load-failed",
     });
   }
 });
 
-/* ============================================================
+/* =========================================================
+   CREATE REGISTRATION
    POST /api/registrations/register
 
-   CREATE REUNION REGISTRATION
-============================================================ */
+   Authentication:
+   Required
+========================================================= */
 
 router.post("/register", verifyToken, async (req, res) => {
   try {
-    await connectDB();
-
     const {
       users,
       studentProfiles,
@@ -362,64 +374,33 @@ router.post("/register", verifyToken, async (req, res) => {
       giftPackages,
     } = getCollections();
 
-    /* ------------------------------------------------------
-         COLLECTION CHECK
-      ------------------------------------------------------ */
-
-    const requiredCollections = {
-      users,
-      studentProfiles,
-      alumniProfiles,
-      reunionEvents,
-      registrations,
-      giftPackages,
-    };
-
-    const missingCollection = Object.entries(requiredCollections).find(
-      ([, collection]) => !collection,
-    );
-
-    if (missingCollection) {
-      const [collectionName] = missingCollection;
-
-      console.error(
-        `Registration failed: missing collection "${collectionName}".`,
-      );
-
+    if (!registrations) {
       return res.status(500).json({
         success: false,
+        message: "Registrations collection is not available.",
         code: "database/collection-not-found",
-        message: `Required database collection "${collectionName}" is not available.`,
       });
     }
 
-    /* ------------------------------------------------------
-         AUTHENTICATION
-      ------------------------------------------------------ */
+    if (!reunionEvents) {
+      return res.status(500).json({
+        success: false,
+        message: "Reunion events collection is not available.",
+        code: "database/collection-not-found",
+      });
+    }
 
-    const uid = getAuthenticatedUid(req);
-
-    const authenticatedEmail = getAuthenticatedEmail(req);
-
-    if (!uid) {
+    if (!req.user?.uid) {
       return res.status(401).json({
         success: false,
-        code: "auth/uid-missing",
-        message: "Authenticated user UID could not be determined.",
+        message: "Authentication required.",
+        code: "auth/unauthorized",
       });
     }
 
-    if (!authenticatedEmail) {
-      return res.status(401).json({
-        success: false,
-        code: "auth/email-missing",
-        message: "Authenticated user email could not be determined.",
-      });
-    }
-
-    /* ------------------------------------------------------
-         REQUEST BODY
-      ------------------------------------------------------ */
+    /* -----------------------------------------------------
+         REQUEST DATA
+      ----------------------------------------------------- */
 
     const body = req.body || {};
 
@@ -431,522 +412,481 @@ router.post("/register", verifyToken, async (req, res) => {
 
     const consent = body.consent || {};
 
-    /*
-     * Production-safe logging.
-     *
-     * Never log Firebase token/password.
-     */
-    console.log("REGISTRATION REQUEST:", {
-      uid,
-      email: authenticatedEmail,
-      eventId: reunion.eventId || body.eventId || null,
-      packageId: reunion.packageId || body.packageId || null,
-    });
+    /* -----------------------------------------------------
+         AUTH USER
+      ----------------------------------------------------- */
 
-    /* ------------------------------------------------------
+    const uid = req.user.uid;
+
+    const authenticatedEmail = req.user.email?.trim().toLowerCase() || "";
+
+    /* -----------------------------------------------------
          PARTICIPANT
-      ------------------------------------------------------ */
+      ----------------------------------------------------- */
 
-    const name = normalizeString(
-      participant.name ||
-        body.name ||
-        req.user?.name ||
-        authenticatedEmail.split("@")[0],
-    );
+    const name = participant.name?.trim() || "";
 
-    const email = normalizeEmail(
-      participant.email || body.email || authenticatedEmail,
-    );
+    const email = participant.email?.trim().toLowerCase() || "";
 
-    const phone = normalizePhone(participant.phone || body.phone || "");
+    const phone = participant.phone?.trim() || "";
 
     /*
-     * Frontend currently sends district/city
-     * inside schoolInfo.
-     *
-     * Support both structures.
+     * District/city are primarily expected inside
+     * schoolInfo, but we also support the older
+     * frontend structure.
      */
-    const district = normalizeString(
-      participant.district || schoolInfo.district || body.district || "",
-    );
+    const district =
+      schoolInfo.district?.trim() || participant.district?.trim() || "";
 
-    const city = normalizeString(
-      participant.city || schoolInfo.city || body.city || "",
-    );
+    const city = schoolInfo.city?.trim() || participant.city?.trim() || "";
 
     if (!name) {
       return res.status(400).json({
         success: false,
-        code: "validation/name-required",
         message: "Name is required.",
+        code: "validation/name-required",
       });
     }
 
     if (!email) {
       return res.status(400).json({
         success: false,
-        code: "validation/email-required",
         message: "Email is required.",
+        code: "validation/email-required",
       });
     }
 
-    /*
-     * Email must match Firebase authenticated email.
-     */
+    if (!authenticatedEmail) {
+      return res.status(401).json({
+        success: false,
+        message: "Authenticated Firebase account does not have an email.",
+        code: "auth/email-missing",
+      });
+    }
+
     if (email !== authenticatedEmail) {
       return res.status(403).json({
         success: false,
+        message: "Registration email must match your logged-in account.",
         code: "auth/email-mismatch",
-        message:
-          "The submitted email does not match the authenticated account.",
       });
     }
+
+    /* -----------------------------------------------------
+         PHONE
+      ----------------------------------------------------- */
 
     if (!phone) {
       return res.status(400).json({
         success: false,
-        code: "validation/phone-required",
         message: "Phone number is required.",
+        code: "validation/phone-required",
       });
     }
 
-    if (!isValidPhone(phone)) {
+    if (!PHONE_REGEX.test(phone)) {
       return res.status(400).json({
         success: false,
+        message: "Please provide a valid Bangladesh mobile number.",
         code: "validation/invalid-phone",
-        message:
-          "Please provide a valid Bangladesh mobile number, for example 01712345678.",
       });
     }
 
-    /* ------------------------------------------------------
+    /* -----------------------------------------------------
+         LOCATION
+      ----------------------------------------------------- */
+
+    if (!district) {
+      return res.status(400).json({
+        success: false,
+        message: "District is required.",
+        code: "validation/district-required",
+      });
+    }
+
+    if (!city) {
+      return res.status(400).json({
+        success: false,
+        message: "City is required.",
+        code: "validation/city-required",
+      });
+    }
+
+    /* -----------------------------------------------------
          SCHOOL INFORMATION
-      ------------------------------------------------------ */
+      ----------------------------------------------------- */
 
     /*
-     * Support studentType from:
+     * Support all known frontend structures:
      *
      * schoolInfo.studentType
      * participant.studentType
      * body.studentType
      */
+
     const studentType = normalizeStudentType(
-      schoolInfo.studentType ||
-        participant.studentType ||
-        body.studentType ||
-        "",
+      schoolInfo.studentType || participant.studentType || body.studentType,
     );
 
     const classLevel = normalizeClassLevel(
-      schoolInfo.classLevel || body.classLevel || "",
+      schoolInfo.classLevel || body.classLevel,
     );
 
-    const batchYear = normalizeBatchYear(
-      schoolInfo.batchYear ?? body.batchYear ?? null,
-    );
+    const batchYearRaw = schoolInfo.batchYear ?? body.batchYear;
 
     const department = normalizeDepartment(
-      schoolInfo.department || body.department || "",
+      schoolInfo.department || body.department,
     );
 
-    if (!VALID_STUDENT_TYPES.has(studentType)) {
+    if (!studentType) {
       return res.status(400).json({
         success: false,
-        code: "validation/invalid-student-type",
+        message: "Student type is required.",
+        code: "validation/student-type-required",
+      });
+    }
+
+    if (!VALID_STUDENT_TYPES.includes(studentType)) {
+      return res.status(400).json({
+        success: false,
         message: "Student type must be current or alumni.",
+        code: "validation/invalid-student-type",
       });
     }
 
-    if (!VALID_CLASS_LEVELS.has(classLevel)) {
+    if (!classLevel) {
       return res.status(400).json({
         success: false,
-        code: "validation/invalid-class-level",
+        message: "Class level is required.",
+        code: "validation/class-required",
+      });
+    }
+
+    if (!VALID_CLASS_LEVELS.includes(classLevel)) {
+      return res.status(400).json({
+        success: false,
         message: "Class level must be between 6 and 10.",
+        code: "validation/invalid-class",
       });
     }
 
-    if (batchYear === null) {
+    /* -----------------------------------------------------
+         BATCH YEAR
+      ----------------------------------------------------- */
+
+    const batchYear = Number(batchYearRaw);
+
+    if (
+      !Number.isInteger(batchYear) ||
+      batchYear < MIN_BATCH_YEAR ||
+      batchYear > MAX_BATCH_YEAR
+    ) {
       return res.status(400).json({
         success: false,
+        message: "Please provide a valid batch year.",
         code: "validation/invalid-batch-year",
-        message: "A valid batch year is required.",
       });
     }
 
-    if (batchYear < MIN_BATCH_YEAR || batchYear > MAX_BATCH_YEAR) {
-      return res.status(400).json({
-        success: false,
-        code: "validation/invalid-batch-year",
-        message: `Batch year must be between ${MIN_BATCH_YEAR} and ${MAX_BATCH_YEAR}.`,
-      });
+    /* -----------------------------------------------------
+         DEPARTMENT
+      ----------------------------------------------------- */
+
+    if (isSeniorClass(classLevel)) {
+      if (!department) {
+        return res.status(400).json({
+          success: false,
+          message: "Department is required for Class 9 and 10.",
+          code: "validation/department-required",
+        });
+      }
+
+      if (!VALID_DEPARTMENTS.includes(department)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid department selected.",
+          code: "validation/invalid-department",
+        });
+      }
     }
 
-    const requiresDepartment = classLevel === "9" || classLevel === "10";
-
-    if (requiresDepartment && !VALID_DEPARTMENTS.has(department)) {
-      return res.status(400).json({
-        success: false,
-        code: "validation/department-required",
-        message: "Department is required for class 9 and 10.",
-      });
-    }
-
-    /* ------------------------------------------------------
-         REUNION INFORMATION
-      ------------------------------------------------------ */
-
-    const eventId = normalizeString(reunion.eventId || body.eventId || "");
-
-    const packageId = normalizeString(
-      reunion.packageId || body.packageId || "",
-    );
-
-    /*
-     * Support:
-     *
-     * reunion.tShirt.size
-     * reunion.tshirt.size
-     * reunion.tShirtSize
-     * reunion.tshirtSize
-     * body.tShirtSize
-     * body.tshirtSize
-     */
-    const tshirtSize = normalizeTshirtSize(
-      reunion.tShirt?.size ||
-        reunion.tshirt?.size ||
-        reunion.tShirtSize ||
-        reunion.tshirtSize ||
-        body.tShirtSize ||
-        body.tshirtSize ||
-        "",
-    );
-
-    if (!eventId) {
-      return res.status(400).json({
-        success: false,
-        code: "validation/event-id-required",
-        message: "Reunion event ID is required.",
-      });
-    }
-
-    if (!isValidObjectId(eventId)) {
-      return res.status(400).json({
-        success: false,
-        code: "validation/invalid-event-id",
-        message: "Invalid reunion event ID.",
-      });
-    }
-
-    if (!packageId) {
-      return res.status(400).json({
-        success: false,
-        code: "validation/package-required",
-        message: "Reunion package is required.",
-      });
-    }
-
-    /* ------------------------------------------------------
-         CONSENT
-      ------------------------------------------------------ */
-
-    const agreedToRules =
-      consent.agreedToRules === true || body.agreedToRules === true;
-
-    if (!agreedToRules) {
-      return res.status(400).json({
-        success: false,
-        code: "validation/consent-required",
-        message: "You must agree to the reunion rules before registering.",
-      });
-    }
-
-    /* ------------------------------------------------------
+    /* -----------------------------------------------------
          EVENT
-      ------------------------------------------------------ */
+      ----------------------------------------------------- */
 
-    const eventObjectId = toObjectId(eventId);
+    const requestedEventId = reunion.eventId || body.eventId || null;
 
-    if (!eventObjectId) {
-      return res.status(400).json({
-        success: false,
-        code: "validation/invalid-event-id",
-        message: "Invalid reunion event ID.",
+    let event = null;
+
+    if (requestedEventId) {
+      const eventObjectId = toObjectId(requestedEventId);
+
+      if (!eventObjectId) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid reunion event ID.",
+          code: "validation/invalid-event-id",
+        });
+      }
+
+      event = await reunionEvents.findOne({
+        _id: eventObjectId,
       });
+    } else {
+      event = await findActiveReunionEvent(reunionEvents);
     }
-
-    const event = await reunionEvents.findOne({
-      _id: eventObjectId,
-    });
 
     if (!event) {
       return res.status(404).json({
         success: false,
-        code: "reunion/event-not-found",
-        message: "The selected reunion event was not found.",
+        message: "Reunion event was not found.",
+        code: "event/not-found",
       });
     }
 
-    /* ------------------------------------------------------
-         REGISTRATION OPEN / CLOSED
-      ------------------------------------------------------ */
+    /* -----------------------------------------------------
+         EVENT REGISTRATION STATUS
+      ----------------------------------------------------- */
 
-    if (!isEventRegistrationOpen(event)) {
-      if (isRegistrationDeadlinePassed(event)) {
-        return res.status(403).json({
-          success: false,
-          code: "reunion/registration-deadline-passed",
-          message: "The registration deadline has passed.",
-        });
-      }
-
+    if (!isRegistrationOpen(event)) {
       return res.status(403).json({
         success: false,
-        code: "reunion/registration-closed",
         message: "Registration for this reunion is currently closed.",
+        code: "registration/closed",
       });
     }
 
-    /* ------------------------------------------------------
+    /* -----------------------------------------------------
          EVENT ELIGIBILITY
-      ------------------------------------------------------ */
+      ----------------------------------------------------- */
 
-    const eligibleStudentTypes = Array.isArray(event.eligibility?.studentTypes)
-      ? event.eligibility.studentTypes.map((item) =>
-          String(item).trim().toLowerCase(),
-        )
-      : null;
+    const eligibleStudentTypes = event.eligibility?.studentTypes;
 
-    if (eligibleStudentTypes && !eligibleStudentTypes.includes(studentType)) {
+    const eligibleClassLevels = event.eligibility?.classLevels;
+
+    const eligibleDepartments = event.eligibility?.departments;
+
+    if (
+      Array.isArray(eligibleStudentTypes) &&
+      eligibleStudentTypes.length > 0 &&
+      !eligibleStudentTypes.includes(studentType)
+    ) {
       return res.status(400).json({
         success: false,
-        code: "validation/student-type-not-eligible",
-        message: "This student type is not eligible for this reunion.",
+        message: "You are not eligible for this reunion event.",
+        code: "registration/student-type-not-eligible",
       });
     }
 
-    const eligibleClassLevels = Array.isArray(event.eligibility?.classLevels)
-      ? event.eligibility.classLevels.map(String)
-      : null;
-
-    if (eligibleClassLevels && !eligibleClassLevels.includes(classLevel)) {
+    if (
+      Array.isArray(eligibleClassLevels) &&
+      eligibleClassLevels.length > 0 &&
+      !eligibleClassLevels.includes(classLevel)
+    ) {
       return res.status(400).json({
         success: false,
-        code: "validation/class-not-eligible",
-        message: "This class level is not eligible for this reunion.",
+        message: "Your class level is not eligible for this reunion event.",
+        code: "registration/class-not-eligible",
       });
     }
 
-    if (requiresDepartment && Array.isArray(event.eligibility?.departments)) {
-      const eligibleDepartments = event.eligibility.departments.map((item) =>
-        String(item).trim().toLowerCase(),
-      );
-
-      if (!eligibleDepartments.includes(department)) {
-        return res.status(400).json({
-          success: false,
-          code: "validation/department-not-eligible",
-          message: "This department is not eligible for this reunion.",
-        });
-      }
+    if (
+      isSeniorClass(classLevel) &&
+      Array.isArray(eligibleDepartments) &&
+      eligibleDepartments.length > 0 &&
+      !eligibleDepartments.includes(department)
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Your department is not eligible for this reunion event.",
+        code: "registration/department-not-eligible",
+      });
     }
 
-    /* ------------------------------------------------------
+    /* -----------------------------------------------------
          CAPACITY
-      ------------------------------------------------------ */
+      ----------------------------------------------------- */
 
     if (
       event.capacity?.enabled === true &&
       Number.isFinite(Number(event.capacity.maximum))
     ) {
-      const maximumCapacity = Number(event.capacity.maximum);
+      const maximum = Number(event.capacity.maximum);
 
-      const currentRegistrationCount = await registrations.countDocuments({
-        "reunion.eventId": eventObjectId,
+      const currentCount = await registrations.countDocuments({
+        "reunion.eventId": event._id,
 
         status: {
           $ne: "cancelled",
         },
       });
 
-      if (currentRegistrationCount >= maximumCapacity) {
-        return res.status(409).json({
+      if (currentCount >= maximum) {
+        return res.status(403).json({
           success: false,
-          code: "reunion/capacity-reached",
           message: "Registration capacity for this reunion has been reached.",
+          code: "registration/capacity-reached",
         });
       }
     }
 
-    /* ------------------------------------------------------
-         GIFT PACKAGE
-      ------------------------------------------------------ */
+    /* -----------------------------------------------------
+         PACKAGE
+      ----------------------------------------------------- */
 
-    const giftPackage = await findGiftPackage(giftPackages, packageId);
+    const requestedPackageId = reunion.packageId || body.packageId || "general";
+
+    const giftPackage = await findGiftPackage(
+      giftPackages,
+      requestedPackageId,
+      event._id,
+    );
 
     if (!giftPackage) {
-      return res.status(404).json({
-        success: false,
-        code: "reunion/package-not-found",
-        message: "The selected reunion gift package was not found.",
-        packageId,
-      });
-    }
-
-    if (giftPackage.active === false) {
       return res.status(400).json({
         success: false,
-        code: "reunion/package-inactive",
-        message: "The selected reunion package is currently unavailable.",
+        message: "Selected reunion gift package was not found.",
+        code: "registration/package-not-found",
       });
     }
 
-    /* ------------------------------------------------------
-         PACKAGE EVENT COMPATIBILITY
-      ------------------------------------------------------ */
-
-    /*
-     * General package:
-     *
-     * eventId: null
-     *
-     * is valid for the reunion.
-     *
-     * If package has an eventId, it must match
-     * the selected event.
-     */
-
-    if (
-      giftPackage.eventId !== null &&
-      giftPackage.eventId !== undefined &&
-      giftPackage.eventId !== ""
-    ) {
-      const packageEventId =
-        giftPackage.eventId?.toString?.() || String(giftPackage.eventId);
-
-      if (packageEventId !== eventId) {
-        return res.status(400).json({
-          success: false,
-          code: "validation/package-event-mismatch",
-          message:
-            "The selected package does not belong to this reunion event.",
-        });
-      }
-    }
-
-    /* ------------------------------------------------------
-         PACKAGE ELIGIBILITY
-      ------------------------------------------------------ */
-
-    if (Array.isArray(giftPackage.eligibility?.studentTypes)) {
-      const packageStudentTypes = giftPackage.eligibility.studentTypes.map(
-        (item) => String(item).trim().toLowerCase(),
-      );
-
-      if (!packageStudentTypes.includes(studentType)) {
-        return res.status(400).json({
-          success: false,
-          code: "validation/package-not-eligible",
-          message: "This package is not available for this student type.",
-        });
-      }
-    }
-
-    if (Array.isArray(giftPackage.eligibility?.classLevels)) {
-      const packageClassLevels =
-        giftPackage.eligibility.classLevels.map(String);
-
-      if (!packageClassLevels.includes(classLevel)) {
-        return res.status(400).json({
-          success: false,
-          code: "validation/package-not-eligible",
-          message: "This package is not available for this class level.",
-        });
-      }
-    }
-
-    /* ------------------------------------------------------
+    /* -----------------------------------------------------
          T-SHIRT
-      ------------------------------------------------------ */
+      ----------------------------------------------------- */
 
-    const packageTshirt = giftPackage.tshirt || {};
+    const requestedTshirtSize =
+      reunion.tShirt?.size ||
+      reunion.tshirt?.size ||
+      body.tshirtSize ||
+      body.tShirtSize ||
+      null;
 
-    const tshirtRequired = packageTshirt.required === true;
+    const normalizedTshirtSize = normalizeTshirtSize(requestedTshirtSize);
 
-    const packageTshirtSizes = Array.isArray(packageTshirt.sizes)
-      ? packageTshirt.sizes.map(normalizeTshirtSize).filter(Boolean)
-      : [];
+    const tshirtRequired =
+      giftPackage.tshirt?.required === true ||
+      giftPackage.tShirt?.required === true;
 
-    /*
-     * If package requires T-shirt,
-     * size must be supplied.
-     */
-    if (tshirtRequired && !tshirtSize) {
+    const tshirtIncluded =
+      giftPackage.tshirt?.included === true ||
+      giftPackage.tShirt?.included === true;
+
+    if ((tshirtRequired || tshirtIncluded) && !normalizedTshirtSize) {
       return res.status(400).json({
         success: false,
+        message: "T-shirt size is required.",
         code: "validation/tshirt-size-required",
-        message: "T-shirt size is required for this package.",
       });
     }
 
-    /*
-     * If a size is supplied,
-     * validate it.
-     */
-    if (tshirtSize && !VALID_TSHIRT_SIZES.has(tshirtSize)) {
-      return res.status(400).json({
-        success: false,
-        code: "validation/invalid-tshirt-size",
-        message: "Please select a valid T-shirt size.",
-      });
-    }
-
-    /*
-     * If package defines available sizes,
-     * selected size must be one of them.
-     */
     if (
-      packageTshirtSizes.length > 0 &&
-      tshirtSize &&
-      !packageTshirtSizes.includes(tshirtSize)
+      normalizedTshirtSize &&
+      !VALID_TSHIRT_SIZES.includes(normalizedTshirtSize)
     ) {
       return res.status(400).json({
         success: false,
-        code: "validation/tshirt-size-not-available",
-        message: "The selected T-shirt size is not available.",
+        message: "Invalid T-shirt size.",
+        code: "validation/invalid-tshirt-size",
       });
     }
 
-    /* ------------------------------------------------------
+    /* -----------------------------------------------------
+         AVAILABLE T-SHIRT SIZES
+      ----------------------------------------------------- */
+
+    const availableTshirtSizes =
+      giftPackage.tshirt?.availableSizes ||
+      giftPackage.tshirt?.sizes ||
+      giftPackage.tShirt?.availableSizes ||
+      giftPackage.tShirt?.sizes ||
+      null;
+
+    if (
+      normalizedTshirtSize &&
+      Array.isArray(availableTshirtSizes) &&
+      availableTshirtSizes.length > 0
+    ) {
+      const normalizedAvailableSizes =
+        availableTshirtSizes.map(normalizeTshirtSize);
+
+      if (!normalizedAvailableSizes.includes(normalizedTshirtSize)) {
+        return res.status(400).json({
+          success: false,
+          message: `T-shirt size ${normalizedTshirtSize} is not available in this package.`,
+          code: "registration/tshirt-size-unavailable",
+        });
+      }
+    }
+
+    /* -----------------------------------------------------
+         CONSENT
+      ----------------------------------------------------- */
+
+    const agreedToRules =
+      consent.agreedToRules === true || body.agreeToRules === true;
+
+    const requiresConsent = event.registration?.requiresConsent !== false;
+
+    if (requiresConsent && !agreedToRules) {
+      return res.status(400).json({
+        success: false,
+        message: "You must agree to the reunion rules before registering.",
+        code: "validation/consent-required",
+      });
+    }
+
+    /* -----------------------------------------------------
          DUPLICATE REGISTRATION
-      ------------------------------------------------------ */
+      ----------------------------------------------------- */
 
     const existingRegistration = await registrations.findOne({
       uid,
 
-      "reunion.eventId": eventObjectId,
+      "reunion.eventId": event._id,
+
+      status: {
+        $ne: "cancelled",
+      },
     });
 
     if (existingRegistration) {
       return res.status(409).json({
         success: false,
-        code: "registration/already-registered",
         message: "You are already registered for this reunion.",
+        code: "registration/already-registered",
 
         data: {
-          registrationId: existingRegistration.registrationId || null,
+          registrationId: existingRegistration.registrationId,
 
-          status: existingRegistration.status || null,
+          status: existingRegistration.status,
         },
       });
     }
 
-    /* ------------------------------------------------------
-         REGISTRATION DATA
-      ------------------------------------------------------ */
+    /* -----------------------------------------------------
+         REGISTRATION ID
+      ----------------------------------------------------- */
 
-    const registrationId = createRegistrationId();
+    let registrationId = createRegistrationId();
 
-    const now = new Date();
+    /*
+     * Extremely unlikely collision protection.
+     */
+    let registrationIdExists = await registrations.findOne({
+      registrationId,
+    });
+
+    while (registrationIdExists) {
+      registrationId = createRegistrationId();
+
+      registrationIdExists = await registrations.findOne({
+        registrationId,
+      });
+    }
+
+    /* -----------------------------------------------------
+         PAYMENT
+      ----------------------------------------------------- */
 
     const paymentRequired =
       event.paymentRequired === true ||
@@ -955,6 +895,24 @@ router.post("/register", verifyToken, async (req, res) => {
 
     const paymentStatus = paymentRequired ? "pending" : "not-required";
 
+    /* -----------------------------------------------------
+         TIMESTAMPS
+      ----------------------------------------------------- */
+
+    const now = new Date();
+
+    /* -----------------------------------------------------
+         QR CODE
+      ----------------------------------------------------- */
+
+    const qrEnabled = event.qrCode?.enabled !== false;
+
+    const qrToken = qrEnabled ? createQrToken() : null;
+
+    /* -----------------------------------------------------
+         REGISTRATION DOCUMENT
+      ----------------------------------------------------- */
+
     const registrationDocument = {
       registrationId,
 
@@ -962,64 +920,67 @@ router.post("/register", verifyToken, async (req, res) => {
 
       participant: {
         name,
-
-        email: authenticatedEmail,
-
+        email,
         phone,
-
-        district: district || null,
-
-        city: city || null,
+        district,
+        city,
       },
 
       schoolInfo: {
         studentType,
-
         classLevel,
-
         batchYear,
 
-        department: requiresDepartment ? department : null,
+        department: isSeniorClass(classLevel) ? department : null,
+
+        district,
+        city,
       },
 
       reunion: {
-        eventId: eventObjectId,
+        eventId: event._id,
 
-        eventTitle: event.title || event.shortTitle || null,
+        eventTitle: event.title || "Grand School Reunion 2027",
 
-        packageId,
+        packageId:
+          giftPackage.packageId || giftPackage.id || requestedPackageId,
 
-        packageDatabaseId: giftPackage._id ? giftPackage._id.toString() : null,
+        packageDatabaseId: giftPackage._id,
 
-        packageName: giftPackage.name || giftPackage.title || null,
+        packageName:
+          giftPackage.name || giftPackage.title || "General Reunion Package",
 
         tShirt: {
-          size: tshirtSize || null,
+          size: normalizedTshirtSize,
         },
       },
 
       consent: {
-        agreedToRules: true,
+        agreedToRules,
 
-        agreedAt: now,
+        agreedAt: agreedToRules
+          ? consent.agreedAt
+            ? new Date(consent.agreedAt)
+            : now
+          : null,
       },
 
-      status: "confirmed",
+      status: paymentRequired ? "pending-payment" : "confirmed",
 
       paymentStatus,
 
       qrCode: {
-        enabled: event.qrCode?.enabled === true,
+        enabled: qrEnabled,
 
         purpose: event.qrCode?.purpose || "attendance",
 
         version: Number(event.qrCode?.version) || 1,
 
-        token: crypto.randomBytes(24).toString("hex"),
+        token: qrToken,
 
-        status: "active",
+        status: qrEnabled ? "active" : "disabled",
 
-        generatedAt: now,
+        generatedAt: qrEnabled ? now : null,
       },
 
       attendance: {
@@ -1035,34 +996,17 @@ router.post("/register", verifyToken, async (req, res) => {
       updatedAt: now,
     };
 
-    /* ------------------------------------------------------
+    /* -----------------------------------------------------
          INSERT REGISTRATION
-      ------------------------------------------------------ */
+      ----------------------------------------------------- */
 
-    let insertResult;
+    const insertResult = await registrations.insertOne(registrationDocument);
 
-    try {
-      insertResult = await registrations.insertOne(registrationDocument);
-    } catch (error) {
-      /*
-       * MongoDB unique-index race condition.
-       */
-      if (error?.code === 11000) {
-        return res.status(409).json({
-          success: false,
-          code: "registration/already-registered",
-          message: "You are already registered for this reunion.",
-        });
-      }
+    /* -----------------------------------------------------
+         UPDATE USER
+      ----------------------------------------------------- */
 
-      throw error;
-    }
-
-    /* ------------------------------------------------------
-         UPDATE USERS
-      ------------------------------------------------------ */
-
-    try {
+    if (users) {
       await users.updateOne(
         {
           uid,
@@ -1070,22 +1014,20 @@ router.post("/register", verifyToken, async (req, res) => {
 
         {
           $set: {
-            uid,
-
-            name,
-
-            email: authenticatedEmail,
+            email,
+            displayName: name,
 
             phone,
+
+            district,
+
+            city,
 
             updatedAt: now,
           },
 
           $setOnInsert: {
-            role: "student",
-
-            status: "active",
-
+            uid,
             createdAt: now,
           },
         },
@@ -1094,27 +1036,16 @@ router.post("/register", verifyToken, async (req, res) => {
           upsert: true,
         },
       );
-    } catch (userError) {
-      /*
-       * Registration has already been successfully
-       * inserted.
-       *
-       * Do not delete the registration automatically.
-       */
-      console.error("Registration created but user update failed:", {
-        message: userError?.message,
-        code: userError?.code,
-      });
     }
 
-    /* ------------------------------------------------------
-         UPDATE STUDENT / ALUMNI PROFILE
-      ------------------------------------------------------ */
+    /* -----------------------------------------------------
+         PROFILE UPSERT
+      ----------------------------------------------------- */
 
     const profileCollection =
-      studentType === "alumni" ? alumniProfiles : studentProfiles;
+      studentType === "current" ? studentProfiles : alumniProfiles;
 
-    try {
+    if (profileCollection) {
       await profileCollection.updateOne(
         {
           uid,
@@ -1124,23 +1055,23 @@ router.post("/register", verifyToken, async (req, res) => {
           $set: {
             uid,
 
-            email: authenticatedEmail,
-
             name,
+
+            email,
 
             phone,
 
-            district: district || null,
+            district,
 
-            city: city || null,
+            city,
+
+            studentType,
 
             classLevel,
 
             batchYear,
 
-            department: requiresDepartment ? department : null,
-
-            studentType,
+            department: isSeniorClass(classLevel) ? department : null,
 
             updatedAt: now,
           },
@@ -1154,20 +1085,16 @@ router.post("/register", verifyToken, async (req, res) => {
           upsert: true,
         },
       );
-    } catch (profileError) {
-      /*
-       * Registration already exists.
-       * Do not fail the registration response.
-       */
-      console.error("Registration created but profile update failed:", {
-        message: profileError?.message,
-        code: profileError?.code,
-      });
     }
 
-    /* ------------------------------------------------------
-         SUCCESS
-      ------------------------------------------------------ */
+    /* -----------------------------------------------------
+         RESPONSE
+      ----------------------------------------------------- */
+
+    console.log(
+      "POST /api/registrations/register CREATE REUNION REGISTRATION successfully:",
+      registrationId,
+    );
 
     return res.status(201).json({
       success: true,
@@ -1183,59 +1110,76 @@ router.post("/register", verifyToken, async (req, res) => {
 
         paymentStatus,
 
+        eventId: event._id.toString(),
+
+        packageId: registrationDocument.reunion.packageId,
+
+        /*
+         * Do NOT return qrToken here.
+         *
+         * The token is security-sensitive and should
+         * remain server-side.
+         */
         qrCode: {
           enabled: registrationDocument.qrCode.enabled,
 
-          purpose: registrationDocument.qrCode.purpose,
-
           status: registrationDocument.qrCode.status,
+
+          purpose: registrationDocument.qrCode.purpose,
         },
       },
     });
   } catch (error) {
-    console.error("POST /api/registrations/register error:", {
-      name: error?.name,
-      message: error?.message,
-      code: error?.code,
-    });
+    console.error("POST /api/registrations/register error:", error);
+
+    /*
+     * Duplicate key protection.
+     */
+    if (error?.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "A registration with this information already exists.",
+        code: "registration/duplicate",
+      });
+    }
 
     return res.status(500).json({
       success: false,
-      code: "registration/server-error",
-      message: "Failed to complete reunion registration.",
+      message: "Failed to create reunion registration.",
+      code: "registration/create-failed",
     });
   }
 });
 
-/* ============================================================
+/* =========================================================
+   GET MY REGISTRATION
    GET /api/registrations/my-registration
 
-   CURRENT AUTHENTICATED USER'S REGISTRATION
-============================================================ */
+   Authentication:
+   Required
+========================================================= */
 
 router.get("/my-registration", verifyToken, async (req, res) => {
   try {
-    await connectDB();
-
-    const { registrations } = getCollections();
+    const { registrations, reunionEvents, giftPackages } = getCollections();
 
     if (!registrations) {
       return res.status(500).json({
         success: false,
-        code: "database/registrations-collection-not-found",
-        message: "registrations collection is not available.",
+        message: "Registrations collection is not available.",
+        code: "database/collection-not-found",
       });
     }
 
-    const uid = getAuthenticatedUid(req);
-
-    if (!uid) {
+    if (!req.user?.uid) {
       return res.status(401).json({
         success: false,
-        code: "auth/uid-missing",
-        message: "Authenticated user UID could not be determined.",
+        message: "Authentication required.",
+        code: "auth/unauthorized",
       });
     }
+
+    const uid = req.user.uid;
 
     const registration = await registrations.findOne(
       {
@@ -1245,6 +1189,7 @@ router.get("/my-registration", verifyToken, async (req, res) => {
           $ne: "cancelled",
         },
       },
+
       {
         sort: {
           createdAt: -1,
@@ -1255,107 +1200,181 @@ router.get("/my-registration", verifyToken, async (req, res) => {
     if (!registration) {
       return res.status(404).json({
         success: false,
+        message: "No reunion registration found for your account.",
         code: "registration/not-found",
-        message: "No reunion registration was found for your account.",
       });
     }
+
+    /* -----------------------------------------------------
+         LOAD EVENT
+      ----------------------------------------------------- */
+
+    let event = null;
+
+    if (reunionEvents && registration.reunion?.eventId) {
+      const eventId = toObjectId(registration.reunion.eventId);
+
+      if (eventId) {
+        event = await reunionEvents.findOne({
+          _id: eventId,
+        });
+      }
+    }
+
+    /* -----------------------------------------------------
+         LOAD GIFT PACKAGE
+      ----------------------------------------------------- */
+
+    let giftPackage = null;
+
+    if (giftPackages && registration.reunion?.packageId) {
+      giftPackage = await findGiftPackage(
+        giftPackages,
+
+        registration.reunion.packageId,
+
+        registration.reunion.eventId,
+      );
+    }
+
+    /*
+     * IMPORTANT:
+     *
+     * Keep the original registration inside data.
+     *
+     * event and giftPackage are added at top level
+     * so existing frontend code is not broken.
+     */
 
     return res.status(200).json({
       success: true,
 
       data: serializeDocument(registration),
+
+      event: serializeEvent(event),
+
+      giftPackage: serializeGiftPackage(giftPackage),
     });
   } catch (error) {
-    console.error("GET /api/registrations/my-registration error:", {
-      name: error?.name,
-      message: error?.message,
-      code: error?.code,
-    });
+    console.error("GET /api/registrations/my-registration error:", error);
 
     return res.status(500).json({
       success: false,
-      code: "registration/server-error",
-      message: "Failed to load your registration.",
+      message: "Failed to load your reunion registration.",
+      code: "registration/my-registration-failed",
     });
   }
 });
 
-/* ============================================================
+/* =========================================================
+   GET SINGLE REGISTRATION
    GET /api/registrations/:registrationId
 
-   CURRENT USER CAN ONLY SEE THEIR OWN REGISTRATION
-============================================================ */
+   Authentication:
+   Required
+
+   Security:
+   User can only see their own registration.
+========================================================= */
 
 router.get("/:registrationId", verifyToken, async (req, res) => {
   try {
-    await connectDB();
-
-    const { registrations } = getCollections();
+    const { registrations, reunionEvents, giftPackages } = getCollections();
 
     if (!registrations) {
       return res.status(500).json({
         success: false,
-        code: "database/registrations-collection-not-found",
-        message: "registrations collection is not available.",
+        message: "Registrations collection is not available.",
+        code: "database/collection-not-found",
       });
     }
 
-    const uid = getAuthenticatedUid(req);
-
-    if (!uid) {
+    if (!req.user?.uid) {
       return res.status(401).json({
         success: false,
-        code: "auth/uid-missing",
-        message: "Authenticated user UID could not be determined.",
+        message: "Authentication required.",
+        code: "auth/unauthorized",
       });
     }
 
-    const registrationId = normalizeString(req.params.registrationId);
+    const { registrationId } = req.params;
 
     if (!registrationId) {
       return res.status(400).json({
         success: false,
-        code: "validation/registration-id-required",
         message: "Registration ID is required.",
+        code: "validation/registration-id-required",
       });
     }
 
     const registration = await registrations.findOne({
       registrationId,
 
-      uid,
+      uid: req.user.uid,
+
+      status: {
+        $ne: "cancelled",
+      },
     });
 
     if (!registration) {
       return res.status(404).json({
         success: false,
+        message: "Registration not found.",
         code: "registration/not-found",
-        message: "Registration was not found.",
       });
+    }
+
+    /* -----------------------------------------------------
+         EVENT
+      ----------------------------------------------------- */
+
+    let event = null;
+
+    if (reunionEvents && registration.reunion?.eventId) {
+      const eventId = toObjectId(registration.reunion.eventId);
+
+      if (eventId) {
+        event = await reunionEvents.findOne({
+          _id: eventId,
+        });
+      }
+    }
+
+    /* -----------------------------------------------------
+         GIFT PACKAGE
+      ----------------------------------------------------- */
+
+    let giftPackage = null;
+
+    if (giftPackages && registration.reunion?.packageId) {
+      giftPackage = await findGiftPackage(
+        giftPackages,
+
+        registration.reunion.packageId,
+
+        registration.reunion.eventId,
+      );
     }
 
     return res.status(200).json({
       success: true,
 
       data: serializeDocument(registration),
+
+      event: serializeEvent(event),
+
+      giftPackage: serializeGiftPackage(giftPackage),
     });
   } catch (error) {
-    console.error("GET /api/registrations/:registrationId error:", {
-      name: error?.name,
-      message: error?.message,
-      code: error?.code,
-    });
+    console.error("GET /api/registrations/:registrationId error:", error);
 
     return res.status(500).json({
       success: false,
-      code: "registration/server-error",
       message: "Failed to load registration.",
+      code: "registration/load-failed",
     });
   }
 });
-
-/* ============================================================
-   EXPORT
-============================================================ */
 
 export default router;
