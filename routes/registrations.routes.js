@@ -3,13 +3,13 @@ import crypto from "crypto";
 import { ObjectId } from "mongodb";
 
 import { connectDB, getCollections } from "../config/db.js";
-import  verifyToken  from "../middleware/verifyToken.js";
+import verifyToken from "../middleware/verifyToken.js";
 
 const router = express.Router();
 
-// ============================================================
-// Constants
-// ============================================================
+/* ============================================================
+   CONSTANTS
+============================================================ */
 
 const VALID_CLASS_LEVELS = new Set(["6", "7", "8", "9", "10"]);
 
@@ -27,9 +27,9 @@ const VALID_TSHIRT_SIZES = new Set(["XS", "S", "M", "L", "XL", "XXL", "3XL"]);
 const MIN_BATCH_YEAR = 1950;
 const MAX_BATCH_YEAR = 2100;
 
-// ============================================================
-// Helper functions
-// ============================================================
+/* ============================================================
+   NORMALIZERS
+============================================================ */
 
 const normalizeString = (value) => {
   if (typeof value !== "string") {
@@ -43,12 +43,16 @@ const normalizeEmail = (value) => {
   return normalizeString(value).toLowerCase();
 };
 
-const normalizeClassLevel = (value) => {
-  return normalizeString(value);
-};
-
 const normalizeStudentType = (value) => {
   return normalizeString(value).toLowerCase();
+};
+
+const normalizeClassLevel = (value) => {
+  if (value === null || value === undefined || value === "") {
+    return "";
+  }
+
+  return String(value).trim();
 };
 
 const normalizeDepartment = (value) => {
@@ -77,6 +81,10 @@ const normalizeBatchYear = (value) => {
   return year;
 };
 
+/* ============================================================
+   VALIDATORS
+============================================================ */
+
 const isValidPhone = (phone) => {
   return /^01[3-9]\d{8}$/.test(phone);
 };
@@ -93,6 +101,10 @@ const toObjectId = (value) => {
   return new ObjectId(value);
 };
 
+/* ============================================================
+   SERIALIZER
+============================================================ */
+
 const serializeDocument = (document) => {
   if (!document) {
     return null;
@@ -104,15 +116,19 @@ const serializeDocument = (document) => {
   };
 };
 
+/* ============================================================
+   REGISTRATION ID
+============================================================ */
+
 const createRegistrationId = () => {
   const randomPart = crypto.randomBytes(5).toString("hex").toUpperCase();
 
   return `SR-2027-${randomPart}`;
 };
 
-// ============================================================
-// Authentication helpers
-// ============================================================
+/* ============================================================
+   AUTH HELPERS
+============================================================ */
 
 const getAuthenticatedUser = (req) => {
   return req.user || req.userData || null;
@@ -130,9 +146,9 @@ const getAuthenticatedEmail = (req) => {
   return normalizeEmail(user?.email);
 };
 
-// ============================================================
-// Event helpers
-// ============================================================
+/* ============================================================
+   EVENT HELPERS
+============================================================ */
 
 const isRegistrationDeadlinePassed = (event) => {
   if (!event?.registrationDeadline) {
@@ -157,6 +173,10 @@ const isEventRegistrationOpen = (event) => {
     return false;
   }
 
+  if (event.registration?.open === false) {
+    return false;
+  }
+
   if (isRegistrationDeadlinePassed(event)) {
     return false;
   }
@@ -164,9 +184,9 @@ const isEventRegistrationOpen = (event) => {
   return true;
 };
 
-// ============================================================
-// Package helper
-// ============================================================
+/* ============================================================
+   GIFT PACKAGE FINDER
+============================================================ */
 
 const findGiftPackage = async (giftPackages, packageId) => {
   const normalizedPackageId = normalizeString(packageId);
@@ -174,10 +194,6 @@ const findGiftPackage = async (giftPackages, packageId) => {
   if (!normalizedPackageId) {
     return null;
   }
-
-  const possibleObjectId = isValidObjectId(normalizedPackageId)
-    ? new ObjectId(normalizedPackageId)
-    : null;
 
   const conditions = [
     {
@@ -188,9 +204,9 @@ const findGiftPackage = async (giftPackages, packageId) => {
     },
   ];
 
-  if (possibleObjectId) {
+  if (isValidObjectId(normalizedPackageId)) {
     conditions.unshift({
-      _id: possibleObjectId,
+      _id: new ObjectId(normalizedPackageId),
     });
   }
 
@@ -202,24 +218,23 @@ const findGiftPackage = async (giftPackages, packageId) => {
   });
 };
 
-// ============================================================
-// GET /api/registrations/test
-// ============================================================
+/* ============================================================
+   GET /api/registrations/test
+============================================================ */
 
 router.get("/test", (req, res) => {
   return res.status(200).json({
     success: true,
     message: "Registrations route is working.",
     route: "/api/registrations",
+    collection: "registrations",
   });
 });
 
-// ============================================================
-// GET /api/registrations
-//
-// Returns the currently active reunion event.
-// Frontend uses this endpoint to load registration information.
-// ============================================================
+/* ============================================================
+   GET /api/registrations
+   Load active reunion event
+============================================================ */
 
 router.get("/", async (req, res) => {
   try {
@@ -270,11 +285,9 @@ router.get("/", async (req, res) => {
   }
 });
 
-// ============================================================
-// POST /api/registrations/register
-//
-// Creates a reunion registration for the authenticated user.
-// ============================================================
+/* ============================================================
+   POST /api/registrations/register
+============================================================ */
 
 router.post("/register", verifyToken, async (req, res) => {
   try {
@@ -289,30 +302,71 @@ router.post("/register", verifyToken, async (req, res) => {
       giftPackages,
     } = getCollections();
 
-    // --------------------------------------------------------
-    // Check required collections
-    // --------------------------------------------------------
+    /* ------------------------------------------------------
+         COLLECTION CHECK
+      ------------------------------------------------------ */
 
-    if (
-      !users ||
-      !studentProfiles ||
-      !alumniProfiles ||
-      !reunionEvents ||
-      !registrations ||
-      !giftPackages
-    ) {
+    if (!users) {
       return res.status(500).json({
         success: false,
-        code: "database/collection-not-found",
-        message: "One or more required MongoDB collections are unavailable.",
+        code: "database/users-collection-not-found",
+        message: "users collection is not available.",
       });
     }
 
-    // --------------------------------------------------------
-    // Authenticated Firebase user
-    // --------------------------------------------------------
+    if (!studentProfiles) {
+      return res.status(500).json({
+        success: false,
+        code: "database/student-profiles-collection-not-found",
+        message: "studentProfiles collection is not available.",
+      });
+    }
+
+    if (!alumniProfiles) {
+      return res.status(500).json({
+        success: false,
+        code: "database/alumni-profiles-collection-not-found",
+        message: "alumniProfiles collection is not available.",
+      });
+    }
+
+    if (!reunionEvents) {
+      return res.status(500).json({
+        success: false,
+        code: "database/reunion-events-collection-not-found",
+        message: "reunionEvents collection is not available.",
+      });
+    }
+
+    /*
+     * IMPORTANT:
+     * Your collection name is registrations.
+     *
+     * Do NOT change this to reunionRegistrations.
+     */
+
+    if (!registrations) {
+      return res.status(500).json({
+        success: false,
+        code: "database/registrations-collection-not-found",
+        message: "registrations collection is not available.",
+      });
+    }
+
+    if (!giftPackages) {
+      return res.status(500).json({
+        success: false,
+        code: "database/gift-packages-collection-not-found",
+        message: "giftPackages collection is not available.",
+      });
+    }
+
+    /* ------------------------------------------------------
+         AUTHENTICATION
+      ------------------------------------------------------ */
 
     const uid = getAuthenticatedUid(req);
+
     const authenticatedEmail = getAuthenticatedEmail(req);
 
     if (!uid) {
@@ -331,26 +385,33 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    // --------------------------------------------------------
-    // Request body
-    // --------------------------------------------------------
+    /* ------------------------------------------------------
+         REQUEST BODY
+      ------------------------------------------------------ */
 
     const body = req.body || {};
 
     const participant = body.participant || {};
+
     const schoolInfo = body.schoolInfo || {};
+
     const reunion = body.reunion || {};
+
     const consent = body.consent || {};
 
-    // --------------------------------------------------------
-    // Participant information
-    // --------------------------------------------------------
+    /* ------------------------------------------------------
+         PARTICIPANT
+      ------------------------------------------------------ */
 
-    const name = normalizeString(participant.name);
-    const email = normalizeEmail(participant.email);
-    const phone = normalizePhone(participant.phone);
-    const district = normalizeString(participant.district);
-    const city = normalizeString(participant.city);
+    const name = normalizeString(participant.name || body.name);
+
+    const email = normalizeEmail(participant.email || body.email);
+
+    const phone = normalizePhone(participant.phone || body.phone);
+
+    const district = normalizeString(participant.district || body.district);
+
+    const city = normalizeString(participant.city || body.city);
 
     if (!name) {
       return res.status(400).json({
@@ -368,7 +429,6 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    // Email must belong to the authenticated Firebase user.
     if (email !== authenticatedEmail) {
       return res.status(403).json({
         success: false,
@@ -390,21 +450,30 @@ router.post("/register", verifyToken, async (req, res) => {
       return res.status(400).json({
         success: false,
         code: "validation/invalid-phone",
-        message: "Please provide a valid Bangladesh mobile number.",
+        message:
+          "Please provide a valid Bangladesh mobile number, for example 01712345678.",
       });
     }
 
-    // --------------------------------------------------------
-    // School information
-    // --------------------------------------------------------
+    /* ------------------------------------------------------
+         SCHOOL INFORMATION
+      ------------------------------------------------------ */
 
-    const studentType = normalizeStudentType(schoolInfo.studentType);
+    const studentType = normalizeStudentType(
+      schoolInfo.studentType || body.studentType,
+    );
 
-    const classLevel = normalizeClassLevel(schoolInfo.classLevel);
+    const classLevel = normalizeClassLevel(
+      schoolInfo.classLevel || body.classLevel,
+    );
 
-    const batchYear = normalizeBatchYear(schoolInfo.batchYear);
+    const batchYear = normalizeBatchYear(
+      schoolInfo.batchYear ?? body.batchYear,
+    );
 
-    const department = normalizeDepartment(schoolInfo.department);
+    const department = normalizeDepartment(
+      schoolInfo.department || body.department,
+    );
 
     if (!VALID_STUDENT_TYPES.has(studentType)) {
       return res.status(400).json({
@@ -438,10 +507,6 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    // --------------------------------------------------------
-    // Department is required only for class 9 and 10.
-    // --------------------------------------------------------
-
     const requiresDepartment = classLevel === "9" || classLevel === "10";
 
     if (requiresDepartment) {
@@ -454,16 +519,20 @@ router.post("/register", verifyToken, async (req, res) => {
       }
     }
 
-    // --------------------------------------------------------
-    // Reunion information
-    // --------------------------------------------------------
+    /* ------------------------------------------------------
+         REUNION INFORMATION
+      ------------------------------------------------------ */
 
-    const eventId = normalizeString(reunion.eventId);
+    const eventId = normalizeString(reunion.eventId || body.eventId);
 
-    const packageId = normalizeString(reunion.packageId);
+    const packageId = normalizeString(reunion.packageId || body.packageId);
 
     const tshirtSize = normalizeTshirtSize(
-      reunion.tShirt?.size || reunion.tshirtSize || reunion.tshirt?.size,
+      reunion.tShirt?.size ||
+        reunion.tshirtSize ||
+        reunion.tshirt?.size ||
+        body.tshirtSize ||
+        body.tShirtSize,
     );
 
     if (!eventId) {
@@ -479,6 +548,7 @@ router.post("/register", verifyToken, async (req, res) => {
         success: false,
         code: "validation/invalid-event-id",
         message: "Invalid reunion event ID.",
+        receivedEventId: eventId,
       });
     }
 
@@ -498,11 +568,12 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    // --------------------------------------------------------
-    // Consent
-    // --------------------------------------------------------
+    /* ------------------------------------------------------
+         CONSENT
+      ------------------------------------------------------ */
 
-    const agreedToRules = consent.agreedToRules === true;
+    const agreedToRules =
+      consent.agreedToRules === true || body.agreedToRules === true;
 
     if (!agreedToRules) {
       return res.status(400).json({
@@ -512,11 +583,19 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    // --------------------------------------------------------
-    // Find event
-    // --------------------------------------------------------
+    /* ------------------------------------------------------
+         EVENT
+      ------------------------------------------------------ */
 
-    const eventObjectId = new ObjectId(eventId);
+    const eventObjectId = toObjectId(eventId);
+
+    if (!eventObjectId) {
+      return res.status(400).json({
+        success: false,
+        code: "validation/invalid-event-id",
+        message: "Invalid reunion event ID.",
+      });
+    }
 
     const event = await reunionEvents.findOne({
       _id: eventObjectId,
@@ -530,11 +609,19 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    // --------------------------------------------------------
-    // Check registration status
-    // --------------------------------------------------------
+    /* ------------------------------------------------------
+         REGISTRATION OPEN/CLOSED
+      ------------------------------------------------------ */
 
-    if (event.registrationOpen !== true) {
+    if (!isEventRegistrationOpen(event)) {
+      if (isRegistrationDeadlinePassed(event)) {
+        return res.status(403).json({
+          success: false,
+          code: "reunion/registration-deadline-passed",
+          message: "The registration deadline has passed.",
+        });
+      }
+
       return res.status(403).json({
         success: false,
         code: "reunion/registration-closed",
@@ -542,29 +629,9 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    if (isRegistrationDeadlinePassed(event)) {
-      return res.status(403).json({
-        success: false,
-        code: "reunion/registration-deadline-passed",
-        message: "The registration deadline has passed.",
-      });
-    }
-
-    // --------------------------------------------------------
-    // Check event registration settings
-    // --------------------------------------------------------
-
-    if (event.registration?.open === false) {
-      return res.status(403).json({
-        success: false,
-        code: "reunion/registration-closed",
-        message: "Registration for this reunion is currently closed.",
-      });
-    }
-
-    // --------------------------------------------------------
-    // Check event eligibility
-    // --------------------------------------------------------
+    /* ------------------------------------------------------
+         EVENT ELIGIBILITY
+      ------------------------------------------------------ */
 
     const eligibleStudentTypes = Array.isArray(event.eligibility?.studentTypes)
       ? event.eligibility.studentTypes
@@ -593,7 +660,10 @@ router.post("/register", verifyToken, async (req, res) => {
     if (
       requiresDepartment &&
       Array.isArray(event.eligibility?.departments) &&
-      !event.eligibility.departments.includes(department)
+      !event.eligibility.departments
+        .map(String)
+        .map((item) => item.toLowerCase())
+        .includes(department)
     ) {
       return res.status(400).json({
         success: false,
@@ -602,9 +672,9 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    // --------------------------------------------------------
-    // Check capacity
-    // --------------------------------------------------------
+    /* ------------------------------------------------------
+         CAPACITY
+      ------------------------------------------------------ */
 
     if (
       event.capacity?.enabled === true &&
@@ -614,6 +684,7 @@ router.post("/register", verifyToken, async (req, res) => {
 
       const currentRegistrationCount = await registrations.countDocuments({
         "reunion.eventId": eventObjectId,
+
         status: {
           $ne: "cancelled",
         },
@@ -628,9 +699,9 @@ router.post("/register", verifyToken, async (req, res) => {
       }
     }
 
-    // --------------------------------------------------------
-    // Find gift package
-    // --------------------------------------------------------
+    /* ------------------------------------------------------
+         GIFT PACKAGE
+      ------------------------------------------------------ */
 
     const giftPackage = await findGiftPackage(giftPackages, packageId);
 
@@ -639,12 +710,13 @@ router.post("/register", verifyToken, async (req, res) => {
         success: false,
         code: "reunion/package-not-found",
         message: "The selected reunion gift package was not found.",
+        packageId,
       });
     }
 
-    // --------------------------------------------------------
-    // Check package eligibility
-    // --------------------------------------------------------
+    /* ------------------------------------------------------
+         PACKAGE ELIGIBILITY
+      ------------------------------------------------------ */
 
     if (
       Array.isArray(giftPackage.eligibility?.studentTypes) &&
@@ -668,9 +740,9 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    // --------------------------------------------------------
-    // Check T-shirt requirement
-    // --------------------------------------------------------
+    /* ------------------------------------------------------
+         T-SHIRT
+      ------------------------------------------------------ */
 
     if (
       giftPackage.tshirt?.required === true &&
@@ -685,7 +757,8 @@ router.post("/register", verifyToken, async (req, res) => {
 
     if (
       Array.isArray(giftPackage.tshirt?.sizes) &&
-      !giftPackage.tshirt.sizes.includes(tshirtSize)
+      giftPackage.tshirt.sizes.length > 0 &&
+      !giftPackage.tshirt.sizes.map(normalizeTshirtSize).includes(tshirtSize)
     ) {
       return res.status(400).json({
         success: false,
@@ -694,12 +767,13 @@ router.post("/register", verifyToken, async (req, res) => {
       });
     }
 
-    // --------------------------------------------------------
-    // Prevent duplicate registration
-    // --------------------------------------------------------
+    /* ------------------------------------------------------
+         DUPLICATE REGISTRATION
+      ------------------------------------------------------ */
 
     const existingRegistration = await registrations.findOne({
       uid,
+
       "reunion.eventId": eventObjectId,
     });
 
@@ -710,30 +784,27 @@ router.post("/register", verifyToken, async (req, res) => {
         message: "You are already registered for this reunion.",
         data: {
           registrationId: existingRegistration.registrationId || null,
+
           status: existingRegistration.status || null,
         },
       });
     }
 
-    // --------------------------------------------------------
-    // Get current user
-    // --------------------------------------------------------
+    /* ------------------------------------------------------
+         USER
+      ------------------------------------------------------ */
 
     const existingUser = await users.findOne({
       uid,
     });
 
-    // --------------------------------------------------------
-    // Create registration ID
-    // --------------------------------------------------------
+    /* ------------------------------------------------------
+         REGISTRATION DATA
+      ------------------------------------------------------ */
 
     const registrationId = createRegistrationId();
 
     const now = new Date();
-
-    // --------------------------------------------------------
-    // Payment status
-    // --------------------------------------------------------
 
     const paymentRequired =
       event.paymentRequired === true ||
@@ -742,10 +813,6 @@ router.post("/register", verifyToken, async (req, res) => {
 
     const paymentStatus = paymentRequired ? "pending" : "not-required";
 
-    // --------------------------------------------------------
-    // Registration document
-    // --------------------------------------------------------
-
     const registrationDocument = {
       registrationId,
 
@@ -753,16 +820,23 @@ router.post("/register", verifyToken, async (req, res) => {
 
       participant: {
         name,
+
         email: authenticatedEmail,
+
         phone,
+
         district: district || null,
+
         city: city || null,
       },
 
       schoolInfo: {
         studentType,
+
         classLevel,
+
         batchYear,
+
         department: requiresDepartment ? department : null,
       },
 
@@ -784,6 +858,7 @@ router.post("/register", verifyToken, async (req, res) => {
 
       consent: {
         agreedToRules: true,
+
         agreedAt: now,
       },
 
@@ -791,9 +866,6 @@ router.post("/register", verifyToken, async (req, res) => {
 
       paymentStatus,
 
-      // ------------------------------------------------------
-      // QR information
-      // ------------------------------------------------------
       qrCode: {
         enabled: event.qrCode?.enabled === true,
 
@@ -808,29 +880,28 @@ router.post("/register", verifyToken, async (req, res) => {
         generatedAt: now,
       },
 
-      // ------------------------------------------------------
-      // Attendance information
-      // ------------------------------------------------------
       attendance: {
         status: "not-checked-in",
+
         checkedInAt: null,
+
         checkedInBy: null,
       },
 
       createdAt: now,
+
       updatedAt: now,
     };
 
-    // --------------------------------------------------------
-    // Insert registration
-    // --------------------------------------------------------
+    /* ------------------------------------------------------
+         INSERT REGISTRATION
+      ------------------------------------------------------ */
 
     let insertResult;
 
     try {
       insertResult = await registrations.insertOne(registrationDocument);
     } catch (error) {
-      // MongoDB duplicate key
       if (error?.code === 11000) {
         return res.status(409).json({
           success: false,
@@ -842,81 +913,103 @@ router.post("/register", verifyToken, async (req, res) => {
       throw error;
     }
 
-    // --------------------------------------------------------
-    // Update users collection
-    // --------------------------------------------------------
+    /* ------------------------------------------------------
+         UPDATE USERS
+      ------------------------------------------------------ */
 
-    await users.updateOne(
-      {
-        uid,
-      },
-      {
-        $set: {
-          name,
-          email: authenticatedEmail,
-          phone,
-          updatedAt: now,
-        },
-        $setOnInsert: {
+    try {
+      await users.updateOne(
+        {
           uid,
-          role: "student",
-          status: "active",
-          createdAt: now,
         },
-      },
-      {
-        upsert: true,
-      },
-    );
+        {
+          $set: {
+            uid,
 
-    // --------------------------------------------------------
-    // Update student/alumni profile
-    // --------------------------------------------------------
+            name,
+
+            email: authenticatedEmail,
+
+            phone,
+
+            updatedAt: now,
+          },
+
+          $setOnInsert: {
+            role: "student",
+
+            status: "active",
+
+            createdAt: now,
+          },
+        },
+        {
+          upsert: true,
+        },
+      );
+    } catch (userError) {
+      console.error("User update failed after registration:", userError);
+
+      /*
+       * Registration has already been created.
+       * We don't delete it automatically because
+       * deleting a valid registration can create
+       * another problem.
+       */
+    }
+
+    /* ------------------------------------------------------
+         UPDATE STUDENT / ALUMNI PROFILE
+      ------------------------------------------------------ */
 
     const profileCollection =
       studentType === "alumni" ? alumniProfiles : studentProfiles;
 
-    await profileCollection.updateOne(
-      {
-        uid,
-      },
-      {
-        $set: {
+    try {
+      await profileCollection.updateOne(
+        {
           uid,
-
-          email: authenticatedEmail,
-
-          name,
-
-          phone,
-
-          district: district || null,
-
-          city: city || null,
-
-          classLevel,
-
-          batchYear,
-
-          department: requiresDepartment ? department : null,
-
-          studentType,
-
-          updatedAt: now,
         },
+        {
+          $set: {
+            uid,
 
-        $setOnInsert: {
-          createdAt: now,
+            email: authenticatedEmail,
+
+            name,
+
+            phone,
+
+            district: district || null,
+
+            city: city || null,
+
+            classLevel,
+
+            batchYear,
+
+            department: requiresDepartment ? department : null,
+
+            studentType,
+
+            updatedAt: now,
+          },
+
+          $setOnInsert: {
+            createdAt: now,
+          },
         },
-      },
-      {
-        upsert: true,
-      },
-    );
+        {
+          upsert: true,
+        },
+      );
+    } catch (profileError) {
+      console.error("Profile update failed after registration:", profileError);
+    }
 
-    // --------------------------------------------------------
-    // Success response
-    // --------------------------------------------------------
+    /* ------------------------------------------------------
+         SUCCESS
+      ------------------------------------------------------ */
 
     return res.status(201).json({
       success: true,
@@ -942,7 +1035,9 @@ router.post("/register", verifyToken, async (req, res) => {
       },
     });
   } catch (error) {
-    console.error("POST /api/registrations/register error:", error);
+    console.error("POST /api/registrations/register error:");
+
+    console.error(error);
 
     return res.status(500).json({
       success: false,
@@ -952,11 +1047,9 @@ router.post("/register", verifyToken, async (req, res) => {
   }
 });
 
-// ============================================================
-// GET /api/registrations/my-registration
-//
-// Returns the authenticated user's latest reunion registration.
-// ============================================================
+/* ============================================================
+   GET /api/registrations/my-registration
+============================================================ */
 
 router.get("/my-registration", verifyToken, async (req, res) => {
   try {
@@ -967,7 +1060,7 @@ router.get("/my-registration", verifyToken, async (req, res) => {
     if (!registrations) {
       return res.status(500).json({
         success: false,
-        code: "database/collection-not-found",
+        code: "database/registrations-collection-not-found",
         message: "registrations collection is not available.",
       });
     }
@@ -1016,11 +1109,9 @@ router.get("/my-registration", verifyToken, async (req, res) => {
   }
 });
 
-// ============================================================
-// GET /api/registrations/:registrationId
-//
-// Returns one registration belonging to the authenticated user.
-// ============================================================
+/* ============================================================
+   GET /api/registrations/:registrationId
+============================================================ */
 
 router.get("/:registrationId", verifyToken, async (req, res) => {
   try {
@@ -1031,7 +1122,7 @@ router.get("/:registrationId", verifyToken, async (req, res) => {
     if (!registrations) {
       return res.status(500).json({
         success: false,
-        code: "database/collection-not-found",
+        code: "database/registrations-collection-not-found",
         message: "registrations collection is not available.",
       });
     }
@@ -1058,6 +1149,7 @@ router.get("/:registrationId", verifyToken, async (req, res) => {
 
     const registration = await registrations.findOne({
       registrationId,
+
       uid,
     });
 
@@ -1084,8 +1176,8 @@ router.get("/:registrationId", verifyToken, async (req, res) => {
   }
 });
 
-// ============================================================
-// Export
-// ============================================================
+/* ============================================================
+   EXPORT
+============================================================ */
 
 export default router;
