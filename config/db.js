@@ -231,14 +231,43 @@ async function connectDB() {
       // REGISTRATIONS INDEXES
       // ======================================================
 
+      // ------------------------------------------------------
+      // Remove old indexes that used the wrong field:
+      // eventId
+      //
+      // Current registration schema uses:
+      // reunion.eventId
+      // ------------------------------------------------------
+
+      await registrations
+        .dropIndex("unique_registration_per_event_user")
+        .catch(() => {});
+
+      await registrations
+        .dropIndex("event_registration_status")
+        .catch(() => {});
+
+      // ------------------------------------------------------
+      // One registration per user per reunion event
+      // ------------------------------------------------------
+
       await ensureIndex(
         registrations,
-        { eventId: 1, uid: 1 },
+        {
+          "reunion.eventId": 1,
+          uid: 1,
+        },
         {
           unique: true,
           name: "unique_registration_per_event_user",
         },
       );
+
+      // ------------------------------------------------------
+      // Registration ID must always be unique
+      // Example:
+      // SR-2027-BF8F1CA724
+      // ------------------------------------------------------
 
       await ensureIndex(
         registrations,
@@ -249,17 +278,39 @@ async function connectDB() {
         },
       );
 
+      // ------------------------------------------------------
+      // User registration history
+      // Useful for:
+      // GET /my-registration
+      // GET /my-events
+      // Dashboard
+      // ------------------------------------------------------
+
       await ensureIndex(
         registrations,
-        { uid: 1, createdAt: -1 },
+        {
+          uid: 1,
+          createdAt: -1,
+        },
         {
           name: "user_registration_history",
         },
       );
 
+      // ------------------------------------------------------
+      // Event registration status
+      // Useful for:
+      // capacity checking
+      // admin statistics
+      // confirmed/cancelled filtering
+      // ------------------------------------------------------
+
       await ensureIndex(
         registrations,
-        { eventId: 1, status: 1 },
+        {
+          "reunion.eventId": 1,
+          status: 1,
+        },
         {
           name: "event_registration_status",
         },

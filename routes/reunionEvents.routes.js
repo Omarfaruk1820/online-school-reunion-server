@@ -1,15 +1,31 @@
 import express from "express";
-import crypto from "crypto";
 import { ObjectId } from "mongodb";
 
-import { connectDB, getCollections } from "../config/db.js";
+import { getCollections } from "../config/db.js";
 import verifyToken from "../middleware/verifyToken.js";
+import verifyAdmin from "../middleware/verifyAdmin.js";
 
 const router = express.Router();
 
 /* =========================================================
    CONSTANTS
 ========================================================= */
+
+const VALID_EVENT_TYPES = [
+  "school-reunion",
+  "reunion",
+  "school-event",
+  "alumni-event",
+];
+
+const VALID_EVENT_STATUSES = [
+  "draft",
+  "published",
+  "active",
+  "closed",
+  "cancelled",
+  "archived",
+];
 
 const VALID_STUDENT_TYPES = ["current", "alumni"];
 
@@ -19,23 +35,60 @@ const VALID_DEPARTMENTS = ["science", "commerce", "humanities", "vocational"];
 
 const VALID_TSHIRT_SIZES = ["XS", "S", "M", "L", "XL", "2XL", "3XL"];
 
-const BATCH_MIN = 1950;
-const BATCH_MAX = 2100;
+const VALID_PAYMENT_STATUSES = [
+  "not-required",
+  "pending",
+  "paid",
+  "failed",
+  "refunded",
+];
+
+const VALID_QR_PURPOSES = ["attendance"];
+
+const DEFAULT_TIMEZONE = "Asia/Dhaka";
 
 /* =========================================================
-   HELPERS
+   BASIC HELPERS
 ========================================================= */
 
-const normalizeString = (value) => {
-  if (value === undefined || value === null) {
+const cleanString = (value) => {
+  if (value === null || value === undefined) {
     return "";
   }
 
   return String(value).trim();
 };
 
-const normalizeEmail = (value) => {
-  return normalizeString(value).toLowerCase();
+const normalizeString = (value, fallback = "") => {
+  const cleaned = cleanString(value);
+
+  return cleaned || fallback;
+};
+
+const normalizeLowerString = (value, fallback = "") => {
+  const cleaned = cleanString(value).toLowerCase();
+
+  return cleaned || fallback;
+};
+
+const normalizeBoolean = (value, fallback = false) => {
+  if (value === true || value === false) {
+    return value;
+  }
+
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+
+    if (normalized === "true" || normalized === "1" || normalized === "yes") {
+      return true;
+    }
+
+    if (normalized === "false" || normalized === "0" || normalized === "no") {
+      return false;
+    }
+  }
+
+  return fallback;
 };
 
 const normalizeObjectId = (value) => {
@@ -47,1189 +100,1232 @@ const normalizeObjectId = (value) => {
     return value;
   }
 
-  if (!ObjectId.isValid(value)) {
+  if (typeof value === "string" && ObjectId.isValid(value)) {
+    return new ObjectId(value);
+  }
+
+  return null;
+};
+
+const isValidObjectId = (value) => {
+  return Boolean(normalizeObjectId(value));
+};
+
+const normalizeDate = (value) => {
+  if (!value) {
     return null;
   }
 
-  return new ObjectId(value);
-};
+  const date = value instanceof Date ? value : new Date(value);
 
-const normalizeBoolean = (value) => {
-  return value === true || value === "true";
-};
-
-const getUserUid = (req) => {
-  return normalizeString(
-    req.user?.uid ||
-      req.user?.user_id ||
-      req.user?.sub ||
-      req.user?.firebaseUid,
-  );
-};
-
-const getUserEmail = (req) => {
-  return normalizeEmail(req.user?.email);
-};
-
-const createRegistrationId = () => {
-  const randomPart = crypto.randomBytes(5).toString("hex").toUpperCase();
-
-  return `SR-2027-${randomPart}`;
-};
-
-const createQrToken = () => {
-  return crypto.randomBytes(32).toString("hex");
-};
-
-const serializeValue = (value) => {
-  if (value instanceof ObjectId) {
-    return value.toString();
-  }
-
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-
-  if (Array.isArray(value)) {
-    return value.map(serializeValue);
-  }
-
-  if (value && typeof value === "object") {
-    const result = {};
-
-    for (const [key, item] of Object.entries(value)) {
-      result[key] = serializeValue(item);
-    }
-
-    return result;
-  }
-
-  return value;
-};
-
-const serializeDocument = (document) => {
-  if (!document) {
+  if (Number.isNaN(date.getTime())) {
     return null;
   }
 
-  const serialized = serializeValue(document);
+  return date;
+};
 
-  if (serialized?._id) {
-    serialized._id = String(serialized._id);
+const normalizeDateOnly = (value) => {
+  const dateString = cleanString(value);
+
+  if (!dateString) {
+    return "";
   }
 
-  return serialized;
+  /*
+    Accept YYYY-MM-DD.
+  */
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(dateString)) {
+    return dateString;
+  }
+
+  const date = new Date(dateString);
+
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+
+  return date.toISOString().slice(0, 10);
 };
 
 /* =========================================================
-   SAFE QR CODE
-   NEVER SEND qrCode.token TO FRONTEND
+   VENUE
 ========================================================= */
 
-const serializeSafeQrCode = (qrCode) => {
-  if (!qrCode || typeof qrCode !== "object") {
-    return null;
+const normalizeVenue = (venue) => {
+  /*
+    Support old structure:
+
+    venue: "School Campus"
+
+    and new structure:
+
+    venue: {
+      name,
+      address,
+      city,
+      country
+    }
+  */
+
+  if (typeof venue === "string") {
+    return {
+      name: cleanString(venue),
+      address: "",
+      city: "",
+      country: "",
+    };
+  }
+
+  if (!venue || typeof venue !== "object") {
+    return {
+      name: "",
+      address: "",
+      city: "",
+      country: "",
+    };
   }
 
   return {
-    enabled: qrCode.enabled === true,
-    purpose: normalizeString(qrCode.purpose),
-    version: qrCode.version ?? 1,
-    status: normalizeString(qrCode.status),
-    generatedAt: qrCode.generatedAt
-      ? new Date(qrCode.generatedAt).toISOString()
-      : null,
+    name: cleanString(venue.name),
+
+    address: cleanString(venue.address),
+
+    city: cleanString(venue.city),
+
+    country: cleanString(venue.country),
   };
 };
 
 /* =========================================================
-   SAFE REGISTRATION RESPONSE
+   ELIGIBILITY
 ========================================================= */
 
-const serializeSafeRegistration = (registration) => {
-  if (!registration) {
+const normalizeEligibility = (eligibility) => {
+  const source = eligibility || {};
+
+  const studentTypes = Array.isArray(source.studentTypes)
+    ? source.studentTypes
+        .map(normalizeLowerString)
+        .filter((value) => VALID_STUDENT_TYPES.includes(value))
+    : [...VALID_STUDENT_TYPES];
+
+  const classLevels = Array.isArray(source.classLevels)
+    ? source.classLevels
+        .map(cleanString)
+        .filter((value) => VALID_CLASS_LEVELS.includes(value))
+    : [...VALID_CLASS_LEVELS];
+
+  const departments = Array.isArray(source.departments)
+    ? source.departments
+        .map(normalizeLowerString)
+        .filter((value) => VALID_DEPARTMENTS.includes(value))
+    : [...VALID_DEPARTMENTS];
+
+  return {
+    studentTypes: studentTypes.length
+      ? [...new Set(studentTypes)]
+      : [...VALID_STUDENT_TYPES],
+
+    classLevels: classLevels.length
+      ? [...new Set(classLevels)]
+      : [...VALID_CLASS_LEVELS],
+
+    departments: departments.length
+      ? [...new Set(departments)]
+      : [...VALID_DEPARTMENTS],
+  };
+};
+
+/* =========================================================
+   GIFTS
+========================================================= */
+
+const normalizeGiftItem = (item, index) => {
+  /*
+    Support:
+
+    "Commemorative Reunion Bag"
+
+    OR
+
+    {
+      id: "bag",
+      name: "Commemorative Reunion Bag",
+      ...
+    }
+  */
+
+  if (typeof item === "string") {
+    const name = cleanString(item);
+
+    if (!name) {
+      return null;
+    }
+
+    return {
+      id: `gift-${index + 1}`,
+
+      name,
+
+      description: "",
+
+      quantity: 1,
+
+      included: true,
+
+      requiresSize: false,
+    };
+  }
+
+  if (!item || typeof item !== "object") {
     return null;
   }
 
-  const data = serializeDocument(registration);
+  const name = cleanString(item.name);
 
-  if (data.qrCode) {
-    data.qrCode = serializeSafeQrCode(registration.qrCode);
+  if (!name) {
+    return null;
+  }
+
+  return {
+    id: cleanString(item.id) || `gift-${index + 1}`,
+
+    name,
+
+    description: cleanString(item.description),
+
+    quantity: Math.max(1, Number(item.quantity) || 1),
+
+    included: normalizeBoolean(item.included, true),
+
+    requiresSize: normalizeBoolean(item.requiresSize, false),
+  };
+};
+
+const normalizeGifts = (gifts) => {
+  const source = gifts || {};
+
+  const rawItems = Array.isArray(source.items) ? source.items : [];
+
+  const items = rawItems.map(normalizeGiftItem).filter(Boolean);
+
+  return {
+    included: normalizeBoolean(source.included, items.length > 0),
+
+    items,
+  };
+};
+
+/* =========================================================
+   REGISTRATION SETTINGS
+========================================================= */
+
+const normalizeRegistration = (registration, registrationOpen) => {
+  const source = registration || {};
+
+  const open =
+    registrationOpen !== undefined
+      ? registrationOpen
+      : normalizeBoolean(source.open, true);
+
+  return {
+    open,
+
+    requiresAuthentication: normalizeBoolean(
+      source.requiresAuthentication,
+      true,
+    ),
+
+    requiresPhone: normalizeBoolean(source.requiresPhone, true),
+
+    requiresConsent: normalizeBoolean(source.requiresConsent, true),
+
+    allowMultipleRegistrations: normalizeBoolean(
+      source.allowMultipleRegistrations,
+      false,
+    ),
+  };
+};
+
+/* =========================================================
+   QR CODE
+========================================================= */
+
+const normalizeQrCode = (qrCode) => {
+  const source = qrCode || {};
+
+  const purpose = cleanString(source.purpose).toLowerCase();
+
+  return {
+    enabled: normalizeBoolean(source.enabled, true),
+
+    purpose: VALID_QR_PURPOSES.includes(purpose) ? purpose : "attendance",
+
+    version: Math.max(1, Number(source.version) || 1),
+  };
+};
+
+/* =========================================================
+   CAPACITY
+========================================================= */
+
+const normalizeCapacity = (capacity) => {
+  const source = capacity || {};
+
+  const enabled = normalizeBoolean(source.enabled, false);
+
+  let maximum = Number(source.maximum);
+
+  if (!Number.isFinite(maximum) || maximum <= 0) {
+    maximum = null;
+  } else {
+    maximum = Math.floor(maximum);
+  }
+
+  let reserved = Number(source.reserved);
+
+  if (!Number.isFinite(reserved) || reserved < 0) {
+    reserved = 0;
+  } else {
+    reserved = Math.floor(reserved);
+  }
+
+  return {
+    enabled,
+
+    maximum,
+
+    reserved,
+  };
+};
+
+/* =========================================================
+   PAYMENT
+========================================================= */
+
+const normalizePayment = (payment, paymentRequired) => {
+  const source = payment || {};
+
+  const required =
+    paymentRequired !== undefined
+      ? paymentRequired
+      : normalizeBoolean(source.required, false);
+
+  let amount = Number(source.amount);
+
+  if (!Number.isFinite(amount) || amount < 0) {
+    amount = 0;
+  }
+
+  return {
+    required,
+
+    currency: cleanString(source.currency).toUpperCase() || "BDT",
+
+    amount,
+
+    status: VALID_PAYMENT_STATUSES.includes(
+      cleanString(source.status).toLowerCase(),
+    )
+      ? cleanString(source.status).toLowerCase()
+      : required
+        ? "pending"
+        : "not-required",
+  };
+};
+
+/* =========================================================
+   FEATURES
+========================================================= */
+
+const normalizeFeatures = (features) => {
+  const source = features || {};
+
+  return {
+    registration: normalizeBoolean(source.registration, true),
+
+    giftDistribution: normalizeBoolean(source.giftDistribution, true),
+
+    attendanceTracking: normalizeBoolean(source.attendanceTracking, true),
+
+    schedule: normalizeBoolean(source.schedule, true),
+
+    gallery: normalizeBoolean(source.gallery, true),
+
+    announcements: normalizeBoolean(source.announcements, true),
+
+    sponsors: normalizeBoolean(source.sponsors, true),
+  };
+};
+
+/* =========================================================
+   EVENT DATA NORMALIZATION
+========================================================= */
+
+const normalizeEventData = (body, existingEvent = null) => {
+  const source = body || {};
+
+  const existing = existingEvent || {};
+
+  const title = normalizeString(source.title, existing.title || "");
+
+  const shortTitle = normalizeString(
+    source.shortTitle,
+    existing.shortTitle || title,
+  );
+
+  const slug = normalizeLowerString(
+    source.slug,
+    existing.slug ||
+      title
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, ""),
+  );
+
+  const eventType = normalizeLowerString(
+    source.eventType,
+    existing.eventType || "school-reunion",
+  );
+
+  const status = normalizeLowerString(
+    source.status,
+    existing.status || "draft",
+  );
+
+  const eventDate = normalizeDateOnly(source.eventDate ?? existing.eventDate);
+
+  const weekday = normalizeString(source.weekday, existing.weekday || "");
+
+  const startTime = normalizeString(
+    source.startTime,
+    existing.startTime || "09:00",
+  );
+
+  const endTime = normalizeString(source.endTime, existing.endTime || "17:00");
+
+  const timezone = normalizeString(
+    source.timezone,
+    existing.timezone || DEFAULT_TIMEZONE,
+  );
+
+  const venue = normalizeVenue(source.venue ?? existing.venue);
+
+  const registrationOpen = normalizeBoolean(
+    source.registrationOpen,
+    existing.registrationOpen !== undefined ? existing.registrationOpen : true,
+  );
+
+  let registrationDeadline =
+    source.registrationDeadline !== undefined
+      ? normalizeDate(source.registrationDeadline)
+      : existing.registrationDeadline
+        ? normalizeDate(existing.registrationDeadline)
+        : null;
+
+  const registration = normalizeRegistration(
+    source.registration ?? existing.registration,
+    registrationOpen,
+  );
+
+  const paymentRequired = normalizeBoolean(
+    source.paymentRequired,
+    existing.paymentRequired || false,
+  );
+
+  const payment = normalizePayment(
+    source.payment ?? existing.payment,
+    paymentRequired,
+  );
+
+  const eligibility = normalizeEligibility(
+    source.eligibility ?? existing.eligibility,
+  );
+
+  const gifts = normalizeGifts(source.gifts ?? existing.gifts);
+
+  const qrCode = normalizeQrCode(source.qrCode ?? existing.qrCode);
+
+  const capacity = normalizeCapacity(source.capacity ?? existing.capacity);
+
+  const features = normalizeFeatures(source.features ?? existing.features);
+
+  /*
+    If registration is closed,
+    deadline does not need to be forced.
+  */
+
+  if (
+    registrationOpen === false &&
+    source.registrationDeadline === undefined &&
+    !existing.registrationDeadline
+  ) {
+    registrationDeadline = null;
+  }
+
+  return {
+    title,
+
+    shortTitle,
+
+    slug,
+
+    edition: normalizeString(
+      source.edition,
+      existing.edition || "76 Years Celebration",
+    ),
+
+    eventType,
+
+    status,
+
+    eventDate,
+
+    weekday,
+
+    startTime,
+
+    endTime,
+
+    timezone,
+
+    venue,
+
+    registrationOpen,
+
+    registrationDeadline,
+
+    paymentRequired,
+
+    registration,
+
+    qrCode,
+
+    capacity,
+
+    payment,
+
+    gifts,
+
+    eligibility,
+
+    features,
+  };
+};
+
+/* =========================================================
+   EVENT VALIDATION
+========================================================= */
+
+const validateEventData = (data) => {
+  const errors = [];
+
+  if (!data.title) {
+    errors.push("Event title is required.");
+  }
+
+  if (!VALID_EVENT_TYPES.includes(data.eventType)) {
+    errors.push("Invalid event type.");
+  }
+
+  if (!VALID_EVENT_STATUSES.includes(data.status)) {
+    errors.push("Invalid event status.");
+  }
+
+  if (!data.eventDate) {
+    errors.push("Event date is required.");
+  }
+
+  if (data.registrationDeadline) {
+    const deadline = new Date(data.registrationDeadline);
+
+    if (Number.isNaN(deadline.getTime())) {
+      errors.push("Invalid registration deadline.");
+    }
+  }
+
+  if (
+    data.capacity.enabled &&
+    (!data.capacity.maximum || data.capacity.maximum <= 0)
+  ) {
+    errors.push(
+      "Capacity maximum must be greater than zero when capacity is enabled.",
+    );
+  }
+
+  if (data.payment.required && data.payment.amount < 0) {
+    errors.push("Payment amount cannot be negative.");
+  }
+
+  if (!data.eligibility.studentTypes.length) {
+    errors.push("At least one eligible student type is required.");
+  }
+
+  if (!data.eligibility.classLevels.length) {
+    errors.push("At least one eligible class level is required.");
+  }
+
+  return errors;
+};
+
+/* =========================================================
+   SERIALIZATION
+========================================================= */
+
+const serializeEvent = (event) => {
+  if (!event) {
+    return null;
+  }
+
+  const data = {
+    ...event,
+  };
+
+  if (data._id instanceof ObjectId) {
+    data._id = data._id.toString();
+  }
+
+  /*
+    Convert date objects to ISO strings.
+  */
+
+  if (data.createdAt instanceof Date) {
+    data.createdAt = data.createdAt.toISOString();
+  }
+
+  if (data.updatedAt instanceof Date) {
+    data.updatedAt = data.updatedAt.toISOString();
+  }
+
+  if (data.registrationDeadline instanceof Date) {
+    data.registrationDeadline = data.registrationDeadline.toISOString();
   }
 
   return data;
 };
 
 /* =========================================================
-   VALIDATION
+   FIND EVENT BY ID
 ========================================================= */
 
-const validatePhone = (phone) => {
-  return /^01[3-9]\d{8}$/.test(phone);
-};
+const findEventById = async (reunionEvents, eventId) => {
+  if (!reunionEvents || !eventId) {
+    return null;
+  }
 
-const validateBatchYear = (batchYear) => {
-  const year = Number(batchYear);
+  /*
+    Try ObjectId first.
+  */
 
-  return Number.isInteger(year) && year >= BATCH_MIN && year <= BATCH_MAX;
-};
+  const objectId = normalizeObjectId(eventId);
 
-const isSeniorClass = (classLevel) => {
-  return classLevel === "9" || classLevel === "10";
+  if (objectId) {
+    const byObjectId = await reunionEvents.findOne({
+      _id: objectId,
+    });
+
+    if (byObjectId) {
+      return byObjectId;
+    }
+  }
+
+  /*
+    Also support string _id.
+
+    This makes the API tolerant if an
+    existing event was stored with a string ID.
+  */
+
+  const stringId = cleanString(eventId);
+
+  if (stringId) {
+    const byStringId = await reunionEvents.findOne({
+      _id: stringId,
+    });
+
+    if (byStringId) {
+      return byStringId;
+    }
+  }
+
+  return null;
 };
 
 /* =========================================================
-   TEST ROUTE
+   ACTIVE EVENT QUERY
 ========================================================= */
 
-router.get("/test", async (req, res, next) => {
-  try {
-    await connectDB();
+const ACTIVE_EVENT_QUERY = {
+  status: {
+    $in: ["published", "active"],
+  },
 
-    res.status(200).json({
-      success: true,
-      message: "Registrations API is working.",
-      route: "/api/registrations",
-      timestamp: new Date().toISOString(),
-    });
-  } catch (error) {
-    next(error);
-  }
+  registrationOpen: true,
+};
+
+/* =========================================================
+   ROUTE: TEST
+========================================================= */
+
+router.get("/test", (req, res) => {
+  return res.status(200).json({
+    success: true,
+    message: "Reunion events route is working.",
+    route: "/api/reunion-events/test",
+    timestamp: new Date().toISOString(),
+  });
 });
 
 /* =========================================================
-   GET ACTIVE REUNION EVENT
-   GET /api/registrations
+   ROUTE: GET ACTIVE EVENT
+   GET /api/reunion-events/active
 ========================================================= */
 
-router.get("/", async (req, res, next) => {
+router.get("/active", async (req, res) => {
   try {
-    await connectDB();
-
-    const { reunionEvents, giftPackages } = getCollections();
+    const { reunionEvents } = getCollections();
 
     if (!reunionEvents) {
       return res.status(500).json({
         success: false,
         message: "Reunion events collection is not available.",
+        code: "database/event-collection-not-found",
       });
     }
 
-    const event = await reunionEvents.findOne(
-      {
-        status: "published",
-        registrationOpen: true,
+    const event = await reunionEvents.findOne(ACTIVE_EVENT_QUERY, {
+      sort: {
+        eventDate: 1,
+        createdAt: -1,
       },
-      {
-        sort: {
-          eventDate: 1,
-          createdAt: -1,
-        },
-      },
-    );
+    });
 
     if (!event) {
       return res.status(404).json({
         success: false,
-        message: "No active reunion event is available.",
+        message: "No active reunion event found.",
+        code: "event/not-found",
       });
     }
 
-    let packages = [];
-
-    if (giftPackages) {
-      packages = await giftPackages
-        .find({
-          active: true,
-        })
-        .sort({
-          createdAt: -1,
-        })
-        .toArray();
-    }
-
-    const serializedEvent = serializeDocument(event);
-
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
-      data: serializedEvent,
-      event: serializedEvent,
-      packages: packages.map(serializeDocument),
+      data: serializeEvent(event),
     });
   } catch (error) {
-    next(error);
+    console.error("GET /api/reunion-events/active error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load active reunion event.",
+      code: "event/active-load-failed",
+    });
   }
 });
 
 /* =========================================================
-   GET MY EVENTS
-   IMPORTANT:
-   This MUST come before /:registrationId
-
-   GET /api/registrations/my-events
+   ROUTE: GET ALL EVENTS
+   GET /api/reunion-events
 ========================================================= */
 
-router.get("/my-events", verifyToken, async (req, res, next) => {
+router.get("/", async (req, res) => {
   try {
-    await connectDB();
+    const { reunionEvents } = getCollections();
 
-    const uid = getUserUid(req);
-
-    if (!uid) {
-      return res.status(401).json({
-        success: false,
-        message: "Authenticated user ID was not found.",
-      });
-    }
-
-    const { registrations, reunionEvents, giftPackages } = getCollections();
-
-    if (!registrations) {
+    if (!reunionEvents) {
       return res.status(500).json({
         success: false,
-        message: "Registrations collection is not available.",
+        message: "Reunion events collection is not available.",
+        code: "database/event-collection-not-found",
       });
     }
 
-    /* ---------------------------------------------
-       1. Find all registrations of current user
-    --------------------------------------------- */
-
-    const registrationDocuments = await registrations
-      .find({
-        uid,
-        status: {
-          $ne: "cancelled",
-        },
-      })
+    const events = await reunionEvents
+      .find({})
       .sort({
+        eventDate: -1,
         createdAt: -1,
       })
       .toArray();
 
-    if (registrationDocuments.length === 0) {
-      return res.status(200).json({
-        success: true,
-        count: 0,
-        data: [],
-      });
-    }
-
-    /* ---------------------------------------------
-       2. Collect event IDs
-    --------------------------------------------- */
-
-    const eventIds = [
-      ...new Set(
-        registrationDocuments
-          .map((registration) => {
-            return registration?.reunion?.eventId;
-          })
-          .filter(Boolean)
-          .map((eventId) => String(eventId)),
-      ),
-    ];
-
-    const validEventIds = eventIds.map(normalizeObjectId).filter(Boolean);
-
-    /* ---------------------------------------------
-       3. Collect package IDs
-    --------------------------------------------- */
-
-    const packageIds = [
-      ...new Set(
-        registrationDocuments
-          .map((registration) => {
-            return registration?.reunion?.packageId;
-          })
-          .filter(Boolean)
-          .map((packageId) => String(packageId)),
-      ),
-    ];
-
-    const validPackageIds = packageIds.map(normalizeObjectId).filter(Boolean);
-
-    /* ---------------------------------------------
-       4. Fetch events
-    --------------------------------------------- */
-
-    let eventDocuments = [];
-
-    if (reunionEvents && validEventIds.length > 0) {
-      eventDocuments = await reunionEvents
-        .find({
-          _id: {
-            $in: validEventIds,
-          },
-        })
-        .toArray();
-    }
-
-    /* ---------------------------------------------
-       5. Fetch packages
-    --------------------------------------------- */
-
-    let packageDocuments = [];
-
-    if (giftPackages && validPackageIds.length > 0) {
-      packageDocuments = await giftPackages
-        .find({
-          _id: {
-            $in: validPackageIds,
-          },
-        })
-        .toArray();
-    }
-
-    /* ---------------------------------------------
-       6. Create lookup maps
-    --------------------------------------------- */
-
-    const eventMap = new Map(
-      eventDocuments.map((event) => [String(event._id), event]),
-    );
-
-    const packageMap = new Map(
-      packageDocuments.map((giftPackage) => [
-        String(giftPackage._id),
-        giftPackage,
-      ]),
-    );
-
-    /* ---------------------------------------------
-       7. Build response
-    --------------------------------------------- */
-
-    const data = registrationDocuments.map((registration) => {
-      const eventId = registration?.reunion?.eventId
-        ? String(registration.reunion.eventId)
-        : "";
-
-      const packageId = registration?.reunion?.packageId
-        ? String(registration.reunion.packageId)
-        : "";
-
-      const event = eventMap.get(eventId) || null;
-
-      const giftPackage = packageMap.get(packageId) || null;
-
-      return {
-        registration: serializeSafeRegistration(registration),
-
-        event: serializeDocument(event),
-
-        giftPackage: serializeDocument(giftPackage),
-      };
-    });
-
     return res.status(200).json({
       success: true,
-      count: data.length,
-      data,
+      count: events.length,
+      data: events.map(serializeEvent),
     });
   } catch (error) {
-    next(error);
+    console.error("GET /api/reunion-events error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load reunion events.",
+      code: "event/list-failed",
+    });
   }
 });
 
 /* =========================================================
-   GET MY REGISTRATION
-   GET /api/registrations/my-registration
+   ROUTE: GET EVENT BY ID
+   GET /api/reunion-events/:eventId
 ========================================================= */
 
-router.get("/my-registration", verifyToken, async (req, res, next) => {
+router.get("/:eventId", async (req, res) => {
   try {
-    await connectDB();
-
-    const uid = getUserUid(req);
-
-    if (!uid) {
-      return res.status(401).json({
-        success: false,
-        message: "Authenticated user ID was not found.",
-      });
-    }
-
-    const { registrations, reunionEvents, giftPackages } = getCollections();
-
-    if (!registrations) {
-      return res.status(500).json({
-        success: false,
-        message: "Registrations collection is not available.",
-      });
-    }
-
-    const registration = await registrations.findOne(
-      {
-        uid,
-        status: {
-          $ne: "cancelled",
-        },
-      },
-      {
-        sort: {
-          createdAt: -1,
-        },
-      },
-    );
-
-    if (!registration) {
-      return res.status(200).json({
-        success: true,
-        data: null,
-      });
-    }
-
-    let event = null;
-    let giftPackage = null;
-
-    /* ---------------------------------------------
-         Event
-      --------------------------------------------- */
-
-    const eventId = normalizeObjectId(registration?.reunion?.eventId);
-
-    if (reunionEvents && eventId) {
-      event = await reunionEvents.findOne({
-        _id: eventId,
-      });
-    }
-
-    /* ---------------------------------------------
-         Gift package
-      --------------------------------------------- */
-
-    const packageId = normalizeObjectId(registration?.reunion?.packageId);
-
-    if (giftPackages && packageId) {
-      giftPackage = await giftPackages.findOne({
-        _id: packageId,
-      });
-    }
-
-    return res.status(200).json({
-      success: true,
-      data: {
-        registration: serializeSafeRegistration(registration),
-
-        event: serializeDocument(event),
-
-        giftPackage: serializeDocument(giftPackage),
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-/* =========================================================
-   CREATE REGISTRATION
-   POST /api/registrations/register
-========================================================= */
-
-router.post("/register", verifyToken, async (req, res, next) => {
-  try {
-    await connectDB();
-
-    const uid = getUserUid(req);
-    const authenticatedEmail = getUserEmail(req);
-
-    if (!uid) {
-      return res.status(401).json({
-        success: false,
-        message: "Authentication is required.",
-      });
-    }
-
-    const {
-      registrations,
-      reunionEvents,
-      giftPackages,
-      users,
-      studentProfiles,
-      alumniProfiles,
-    } = getCollections();
-
-    if (!registrations) {
-      return res.status(500).json({
-        success: false,
-        message: "Registrations collection is not available.",
-      });
-    }
+    const { reunionEvents } = getCollections();
 
     if (!reunionEvents) {
       return res.status(500).json({
         success: false,
         message: "Reunion events collection is not available.",
+        code: "database/event-collection-not-found",
       });
     }
 
-    /* ---------------------------------------------
-         Request data
-      --------------------------------------------- */
-
-    const participant = req.body?.participant || {};
-
-    const schoolInfo = req.body?.schoolInfo || {};
-
-    const reunion = req.body?.reunion || {};
-
-    const consent = req.body?.consent || {};
-
-    const name = normalizeString(participant.name);
-
-    const email = normalizeEmail(participant.email);
-
-    const phone = normalizeString(participant.phone);
-
-    const district = normalizeString(participant.district);
-
-    const city = normalizeString(participant.city);
-
-    const studentType = normalizeString(schoolInfo.studentType).toLowerCase();
-
-    const classLevel = normalizeString(schoolInfo.classLevel);
-
-    const batchYear = Number(schoolInfo.batchYear);
-
-    const department = normalizeString(schoolInfo.department).toLowerCase();
-
-    const eventId = normalizeObjectId(reunion.eventId);
-
-    const packageId = normalizeObjectId(reunion.packageId);
-
-    const tShirtSize = normalizeString(
-      reunion?.tShirt?.size || reunion?.tShirtSize,
-    );
-
-    const agreedToRules = normalizeBoolean(consent.agreedToRules);
-
-    /* ---------------------------------------------
-         Required fields
-      --------------------------------------------- */
-
-    if (!name) {
-      return res.status(400).json({
-        success: false,
-        message: "Name is required.",
-      });
-    }
-
-    if (!email) {
-      return res.status(400).json({
-        success: false,
-        message: "Email is required.",
-      });
-    }
-
-    if (!authenticatedEmail) {
-      return res.status(401).json({
-        success: false,
-        message: "Authenticated email was not found.",
-      });
-    }
-
-    if (email !== authenticatedEmail) {
-      return res.status(403).json({
-        success: false,
-        message: "Registration email must match your signed-in account.",
-      });
-    }
-
-    if (!phone) {
-      return res.status(400).json({
-        success: false,
-        message: "Phone number is required.",
-      });
-    }
-
-    if (!validatePhone(phone)) {
-      return res.status(400).json({
-        success: false,
-        message: "Please provide a valid Bangladesh mobile number.",
-      });
-    }
-
-    if (!district) {
-      return res.status(400).json({
-        success: false,
-        message: "District is required.",
-      });
-    }
-
-    if (!city) {
-      return res.status(400).json({
-        success: false,
-        message: "City is required.",
-      });
-    }
-
-    /* ---------------------------------------------
-         Student validation
-      --------------------------------------------- */
-
-    if (!VALID_STUDENT_TYPES.includes(studentType)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid student type.",
-      });
-    }
-
-    if (!VALID_CLASS_LEVELS.includes(classLevel)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid class level.",
-      });
-    }
-
-    if (!validateBatchYear(batchYear)) {
-      return res.status(400).json({
-        success: false,
-        message: `Batch year must be between ${BATCH_MIN} and ${BATCH_MAX}.`,
-      });
-    }
-
-    if (isSeniorClass(classLevel)) {
-      if (!VALID_DEPARTMENTS.includes(department)) {
-        return res.status(400).json({
-          success: false,
-          message: "Department is required for class 9 and 10.",
-        });
-      }
-    }
-
-    /* ---------------------------------------------
-         Event ID
-      --------------------------------------------- */
+    const eventId = cleanString(req.params.eventId);
 
     if (!eventId) {
       return res.status(400).json({
         success: false,
-        message: "A valid reunion event is required.",
+        message: "Event ID is required.",
+        code: "validation/event-id-required",
       });
     }
 
-    /* ---------------------------------------------
-         Find event
-      --------------------------------------------- */
-
-    const event = await reunionEvents.findOne({
-      _id: eventId,
-    });
+    const event = await findEventById(reunionEvents, eventId);
 
     if (!event) {
       return res.status(404).json({
         success: false,
-        message: "The selected reunion event was not found.",
-      });
-    }
-
-    if (event.status && event.status !== "published") {
-      return res.status(403).json({
-        success: false,
-        message: "This reunion event is not currently published.",
-      });
-    }
-
-    if (event.registrationOpen === false) {
-      return res.status(403).json({
-        success: false,
-        message: "Registration for this reunion is currently closed.",
-      });
-    }
-
-    /* ---------------------------------------------
-         Registration deadline
-      --------------------------------------------- */
-
-    if (event.registrationDeadline) {
-      const deadline = new Date(event.registrationDeadline);
-
-      if (!Number.isNaN(deadline.getTime()) && new Date() > deadline) {
-        return res.status(403).json({
-          success: false,
-          message: "The registration deadline has passed.",
-        });
-      }
-    }
-
-    /* ---------------------------------------------
-         Eligibility
-      --------------------------------------------- */
-
-    const eligibleStudentTypes = Array.isArray(event?.eligibility?.studentTypes)
-      ? event.eligibility.studentTypes
-      : VALID_STUDENT_TYPES;
-
-    if (!eligibleStudentTypes.includes(studentType)) {
-      return res.status(400).json({
-        success: false,
-        message: "You are not eligible for this event.",
-      });
-    }
-
-    const eligibleClasses = Array.isArray(event?.eligibility?.classLevels)
-      ? event.eligibility.classLevels
-      : VALID_CLASS_LEVELS;
-
-    if (!eligibleClasses.includes(classLevel)) {
-      return res.status(400).json({
-        success: false,
-        message: "Your class level is not eligible for this event.",
-      });
-    }
-
-    /* ---------------------------------------------
-         Gift package
-      --------------------------------------------- */
-
-    let giftPackage = null;
-
-    if (packageId) {
-      if (!giftPackages) {
-        return res.status(500).json({
-          success: false,
-          message: "Gift packages collection is not available.",
-        });
-      }
-
-      giftPackage = await giftPackages.findOne({
-        _id: packageId,
-        active: true,
-      });
-
-      if (!giftPackage) {
-        return res.status(400).json({
-          success: false,
-          message: "Selected gift package was not found or is inactive.",
-        });
-      }
-    }
-
-    /* ---------------------------------------------
-         T-shirt validation
-      --------------------------------------------- */
-
-    const tshirtRequired =
-      giftPackage?.tshirt?.required === true ||
-      giftPackage?.tShirt?.required === true ||
-      giftPackage?.items?.some(
-        (item) =>
-          item &&
-          typeof item === "object" &&
-          item.included !== false &&
-          (item.requiresSize === true || item.id === "tshirt"),
-      );
-
-    if (tshirtRequired && !VALID_TSHIRT_SIZES.includes(tShirtSize)) {
-      return res.status(400).json({
-        success: false,
-        message: "Please select a valid T-shirt size.",
-      });
-    }
-
-    if (tShirtSize && !VALID_TSHIRT_SIZES.includes(tShirtSize)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid T-shirt size.",
-      });
-    }
-
-    /* ---------------------------------------------
-         Consent
-      --------------------------------------------- */
-
-    if (!agreedToRules) {
-      return res.status(400).json({
-        success: false,
-        message: "You must agree to the reunion rules.",
-      });
-    }
-
-    /* ---------------------------------------------
-         Capacity
-      --------------------------------------------- */
-
-    if (event?.capacity?.enabled === true) {
-      const maximum = Number(event.capacity.maximum);
-
-      if (Number.isFinite(maximum) && maximum > 0) {
-        const confirmedCount = await registrations.countDocuments({
-          "reunion.eventId": eventId,
-          status: {
-            $ne: "cancelled",
-          },
-        });
-
-        if (confirmedCount >= maximum) {
-          return res.status(409).json({
-            success: false,
-            message: "Registration capacity for this event has been reached.",
-          });
-        }
-      }
-    }
-
-    /* ---------------------------------------------
-         Duplicate registration check
-      --------------------------------------------- */
-
-    const existingRegistration = await registrations.findOne({
-      uid,
-      "reunion.eventId": eventId,
-      status: {
-        $ne: "cancelled",
-      },
-    });
-
-    if (existingRegistration) {
-      return res.status(409).json({
-        success: false,
-        message: "You have already registered for this reunion event.",
-        registrationId: existingRegistration.registrationId,
-      });
-    }
-
-    /* ---------------------------------------------
-         Registration ID
-      --------------------------------------------- */
-
-    let registrationId = createRegistrationId();
-
-    let registrationIdExists = await registrations.findOne({
-      registrationId,
-    });
-
-    while (registrationIdExists) {
-      registrationId = createRegistrationId();
-
-      registrationIdExists = await registrations.findOne({
-        registrationId,
-      });
-    }
-
-    /* ---------------------------------------------
-         QR code
-         Token stays in database only.
-      --------------------------------------------- */
-
-    const qrCode = {
-      enabled: event?.qrCode?.enabled !== false,
-
-      purpose: normalizeString(event?.qrCode?.purpose) || "attendance",
-
-      version: Number(event?.qrCode?.version) || 1,
-
-      token: createQrToken(),
-
-      status: "active",
-
-      generatedAt: new Date(),
-    };
-
-    /* ---------------------------------------------
-         Registration document
-      --------------------------------------------- */
-
-    const now = new Date();
-
-    const registrationDocument = {
-      registrationId,
-
-      uid,
-
-      participant: {
-        name,
-        email,
-        phone,
-        district,
-        city,
-      },
-
-      schoolInfo: {
-        studentType,
-        classLevel,
-        batchYear,
-
-        ...(isSeniorClass(classLevel)
-          ? {
-              department,
-            }
-          : {
-              department: null,
-            }),
-      },
-
-      reunion: {
-        eventId: event._id,
-
-        eventTitle: normalizeString(event.title),
-
-        packageId: giftPackage?._id || null,
-
-        packageDatabaseId: giftPackage?._id || null,
-
-        packageName:
-          normalizeString(giftPackage?.name || giftPackage?.title) || null,
-
-        ...(tShirtSize
-          ? {
-              tShirt: {
-                size: tShirtSize,
-              },
-            }
-          : {}),
-      },
-
-      consent: {
-        agreedToRules: true,
-        agreedAt: now,
-      },
-
-      status: "confirmed",
-
-      paymentStatus:
-        event?.paymentRequired === true ? "pending" : "not-required",
-
-      qrCode,
-
-      attendance: {
-        status: "not-checked-in",
-        checkedInAt: null,
-        checkedInBy: null,
-      },
-
-      createdAt: now,
-      updatedAt: now,
-    };
-
-    /* ---------------------------------------------
-         Insert registration
-      --------------------------------------------- */
-
-    let insertResult;
-
-    try {
-      insertResult = await registrations.insertOne(registrationDocument);
-    } catch (error) {
-      /* -------------------------------------------
-           Unique index race-condition protection
-        ------------------------------------------- */
-
-      if (error?.code === 11000) {
-        const duplicate = await registrations.findOne({
-          uid,
-          "reunion.eventId": event._id,
-          status: {
-            $ne: "cancelled",
-          },
-        });
-
-        return res.status(409).json({
-          success: false,
-          message: "You have already registered for this reunion event.",
-          registrationId: duplicate?.registrationId || null,
-        });
-      }
-
-      throw error;
-    }
-
-    /* ---------------------------------------------
-         Update users collection
-      --------------------------------------------- */
-
-    if (users) {
-      await users.updateOne(
-        {
-          uid,
-        },
-        {
-          $set: {
-            name,
-            email,
-            phone,
-            updatedAt: now,
-          },
-          $setOnInsert: {
-            uid,
-            role: "student",
-            status: "active",
-            createdAt: now,
-          },
-        },
-        {
-          upsert: true,
-        },
-      );
-    }
-
-    /* ---------------------------------------------
-         Save student/alumni profile
-      --------------------------------------------- */
-
-    const profileCollection =
-      studentType === "alumni" ? alumniProfiles : studentProfiles;
-
-    if (profileCollection) {
-      await profileCollection.updateOne(
-        {
-          uid,
-        },
-        {
-          $set: {
-            uid,
-            name,
-            email,
-            phone,
-            district,
-            city,
-            studentType,
-            classLevel,
-            batchYear,
-
-            ...(isSeniorClass(classLevel)
-              ? {
-                  department,
-                }
-              : {
-                  department: null,
-                }),
-
-            updatedAt: now,
-          },
-
-          $setOnInsert: {
-            createdAt: now,
-          },
-        },
-        {
-          upsert: true,
-        },
-      );
-    }
-
-    /* ---------------------------------------------
-         Response
-      --------------------------------------------- */
-
-    const safeRegistration = serializeSafeRegistration(registrationDocument);
-
-    return res.status(201).json({
-      success: true,
-      message: "Reunion registration completed successfully.",
-
-      data: {
-        registrationId,
-
-        databaseId: insertResult.insertedId.toString(),
-
-        status: registrationDocument.status,
-
-        paymentStatus: registrationDocument.paymentStatus,
-
-        registration: safeRegistration,
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-/* =========================================================
-   GET REGISTRATION BY REGISTRATION ID
-
-   IMPORTANT:
-   This route must remain AFTER:
-   /my-events
-   /my-registration
-
-   GET /api/registrations/:registrationId
-========================================================= */
-
-router.get("/:registrationId", verifyToken, async (req, res, next) => {
-  try {
-    await connectDB();
-
-    const uid = getUserUid(req);
-
-    if (!uid) {
-      return res.status(401).json({
-        success: false,
-        message: "Authentication is required.",
-      });
-    }
-
-    const registrationId = normalizeString(req.params.registrationId);
-
-    if (!registrationId) {
-      return res.status(400).json({
-        success: false,
-        message: "Registration ID is required.",
-      });
-    }
-
-    const { registrations, reunionEvents, giftPackages } = getCollections();
-
-    if (!registrations) {
-      return res.status(500).json({
-        success: false,
-        message: "Registrations collection is not available.",
-      });
-    }
-
-    const registration = await registrations.findOne({
-      registrationId,
-      uid,
-    });
-
-    if (!registration) {
-      return res.status(404).json({
-        success: false,
-        message: "Registration was not found.",
-      });
-    }
-
-    let event = null;
-    let giftPackage = null;
-
-    /* ---------------------------------------------
-         Event
-      --------------------------------------------- */
-
-    const eventId = normalizeObjectId(registration?.reunion?.eventId);
-
-    if (reunionEvents && eventId) {
-      event = await reunionEvents.findOne({
-        _id: eventId,
-      });
-    }
-
-    /* ---------------------------------------------
-         Package
-      --------------------------------------------- */
-
-    const packageId = normalizeObjectId(registration?.reunion?.packageId);
-
-    if (giftPackages && packageId) {
-      giftPackage = await giftPackages.findOne({
-        _id: packageId,
+        message: "Reunion event not found.",
+        code: "event/not-found",
       });
     }
 
     return res.status(200).json({
       success: true,
-
-      data: {
-        registration: serializeSafeRegistration(registration),
-
-        event: serializeDocument(event),
-
-        giftPackage: serializeDocument(giftPackage),
-      },
+      data: serializeEvent(event),
     });
   } catch (error) {
-    next(error);
+    console.error("GET /api/reunion-events/:eventId error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to load reunion event.",
+      code: "event/get-failed",
+    });
+  }
+});
+
+/* =========================================================
+   ROUTE: CREATE EVENT
+   POST /api/reunion-events
+
+   ADMIN ONLY
+========================================================= */
+
+router.post("/", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { reunionEvents } = getCollections();
+
+    if (!reunionEvents) {
+      return res.status(500).json({
+        success: false,
+        message: "Reunion events collection is not available.",
+        code: "database/event-collection-not-found",
+      });
+    }
+
+    const eventData = normalizeEventData(req.body);
+
+    const validationErrors = validateEventData(eventData);
+
+    if (validationErrors.length) {
+      return res.status(400).json({
+        success: false,
+        message: "Event validation failed.",
+        code: "validation/event-invalid",
+        errors: validationErrors,
+      });
+    }
+
+    /*
+        Only one event can be active
+        for registration at a time.
+      */
+
+    if (
+      eventData.registrationOpen === true &&
+      (eventData.status === "published" || eventData.status === "active")
+    ) {
+      const existingActiveEvent =
+        await reunionEvents.findOne(ACTIVE_EVENT_QUERY);
+
+      if (existingActiveEvent) {
+        return res.status(409).json({
+          success: false,
+          message: "Another reunion event is already active for registration.",
+          code: "event/active-event-exists",
+
+          existingEventId:
+            existingActiveEvent._id instanceof ObjectId
+              ? existingActiveEvent._id.toString()
+              : String(existingActiveEvent._id),
+        });
+      }
+    }
+
+    /*
+        Prevent duplicate slug.
+      */
+
+    if (eventData.slug) {
+      const existingSlug = await reunionEvents.findOne({
+        slug: eventData.slug,
+      });
+
+      if (existingSlug) {
+        return res.status(409).json({
+          success: false,
+          message: "An event with this slug already exists.",
+          code: "event/duplicate-slug",
+        });
+      }
+    }
+
+    const now = new Date();
+
+    const document = {
+      ...eventData,
+
+      createdAt: now,
+
+      updatedAt: now,
+
+      createdBy: req.user?.uid || null,
+    };
+
+    const result = await reunionEvents.insertOne(document);
+
+    const createdEvent = await reunionEvents.findOne({
+      _id: result.insertedId,
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: "Reunion event created successfully.",
+
+      data: serializeEvent(createdEvent),
+    });
+  } catch (error) {
+    console.error("POST /api/reunion-events error:", error);
+
+    if (error?.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "An event with the same unique field already exists.",
+        code: "event/duplicate",
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to create reunion event.",
+      code: "event/create-failed",
+    });
+  }
+});
+
+/* =========================================================
+   ROUTE: UPDATE EVENT
+   PATCH /api/reunion-events/:eventId
+
+   ADMIN ONLY
+========================================================= */
+
+router.patch("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { reunionEvents } = getCollections();
+
+    if (!reunionEvents) {
+      return res.status(500).json({
+        success: false,
+        message: "Reunion events collection is not available.",
+        code: "database/event-collection-not-found",
+      });
+    }
+
+    const eventId = cleanString(req.params.eventId);
+
+    if (!eventId) {
+      return res.status(400).json({
+        success: false,
+        message: "Event ID is required.",
+        code: "validation/event-id-required",
+      });
+    }
+
+    const existingEvent = await findEventById(reunionEvents, eventId);
+
+    if (!existingEvent) {
+      return res.status(404).json({
+        success: false,
+        message: "Reunion event not found.",
+        code: "event/not-found",
+      });
+    }
+
+    /*
+        Merge current document with
+        requested update.
+      */
+
+    const eventData = normalizeEventData(req.body, existingEvent);
+
+    const validationErrors = validateEventData(eventData);
+
+    if (validationErrors.length) {
+      return res.status(400).json({
+        success: false,
+        message: "Event validation failed.",
+        code: "validation/event-invalid",
+        errors: validationErrors,
+      });
+    }
+
+    /*
+        Prevent duplicate slug.
+      */
+
+    if (eventData.slug) {
+      const duplicateSlug = await reunionEvents.findOne({
+        slug: eventData.slug,
+
+        _id: {
+          $ne: existingEvent._id,
+        },
+      });
+
+      if (duplicateSlug) {
+        return res.status(409).json({
+          success: false,
+          message: "Another event already uses this slug.",
+          code: "event/duplicate-slug",
+        });
+      }
+    }
+
+    /*
+        If this event is being made active,
+        check for another active event.
+      */
+
+    const isBecomingActive =
+      eventData.registrationOpen === true &&
+      (eventData.status === "published" || eventData.status === "active");
+
+    if (isBecomingActive) {
+      const anotherActiveEvent = await reunionEvents.findOne({
+        ...ACTIVE_EVENT_QUERY,
+
+        _id: {
+          $ne: existingEvent._id,
+        },
+      });
+
+      if (anotherActiveEvent) {
+        return res.status(409).json({
+          success: false,
+          message: "Another reunion event is already active for registration.",
+          code: "event/active-event-exists",
+
+          existingEventId:
+            anotherActiveEvent._id instanceof ObjectId
+              ? anotherActiveEvent._id.toString()
+              : String(anotherActiveEvent._id),
+        });
+      }
+    }
+
+    const now = new Date();
+
+    const updateData = {
+      ...eventData,
+
+      updatedAt: now,
+
+      updatedBy: req.user?.uid || null,
+    };
+
+    const updateResult = await reunionEvents.updateOne(
+      {
+        _id: existingEvent._id,
+      },
+      {
+        $set: updateData,
+      },
+    );
+
+    if (updateResult.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Reunion event not found.",
+        code: "event/not-found",
+      });
+    }
+
+    const updatedEvent = await reunionEvents.findOne({
+      _id: existingEvent._id,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: "Reunion event updated successfully.",
+
+      data: serializeEvent(updatedEvent),
+    });
+  } catch (error) {
+    console.error("PATCH /api/reunion-events/:eventId error:", error);
+
+    if (error?.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "An event with the same unique field already exists.",
+        code: "event/duplicate",
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to update reunion event.",
+      code: "event/update-failed",
+    });
+  }
+});
+
+/* =========================================================
+   ROUTE: DELETE EVENT
+   DELETE /api/reunion-events/:eventId
+
+   ADMIN ONLY
+========================================================= */
+
+router.delete("/:eventId", verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const { reunionEvents, registrations } = getCollections();
+
+    if (!reunionEvents) {
+      return res.status(500).json({
+        success: false,
+        message: "Reunion events collection is not available.",
+        code: "database/event-collection-not-found",
+      });
+    }
+
+    const eventId = cleanString(req.params.eventId);
+
+    if (!eventId) {
+      return res.status(400).json({
+        success: false,
+        message: "Event ID is required.",
+        code: "validation/event-id-required",
+      });
+    }
+
+    const event = await findEventById(reunionEvents, eventId);
+
+    if (!event) {
+      return res.status(404).json({
+        success: false,
+        message: "Reunion event not found.",
+        code: "event/not-found",
+      });
+    }
+
+    /*
+        Do not delete an event that already
+        has registrations.
+
+        Current registration schema:
+
+        reunion.eventId
+      */
+
+    if (registrations) {
+      let registrationCount = 0;
+
+      /*
+          Most current events use ObjectId.
+        */
+
+      if (event._id instanceof ObjectId) {
+        registrationCount = await registrations.countDocuments({
+          "reunion.eventId": event._id,
+        });
+      } else {
+        /*
+            Support string event IDs as well.
+          */
+
+        registrationCount = await registrations.countDocuments({
+          $or: [
+            {
+              "reunion.eventId": event._id,
+            },
+
+            ...(isValidObjectId(event._id)
+              ? [
+                  {
+                    "reunion.eventId": normalizeObjectId(event._id),
+                  },
+                ]
+              : []),
+          ],
+        });
+      }
+
+      if (registrationCount > 0) {
+        return res.status(409).json({
+          success: false,
+          message:
+            "This event cannot be deleted because registrations already exist for it.",
+          code: "event/has-registrations",
+
+          registrationCount,
+        });
+      }
+    }
+
+    const result = await reunionEvents.deleteOne({
+      _id: event._id,
+    });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Reunion event was not deleted.",
+        code: "event/delete-failed",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: "Reunion event deleted successfully.",
+
+      eventId:
+        event._id instanceof ObjectId
+          ? event._id.toString()
+          : String(event._id),
+    });
+  } catch (error) {
+    console.error("DELETE /api/reunion-events/:eventId error:", error);
+
+    return res.status(500).json({
+      success: false,
+      message: "Failed to delete reunion event.",
+      code: "event/delete-failed",
+    });
   }
 });
 
